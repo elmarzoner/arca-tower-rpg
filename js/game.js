@@ -293,6 +293,7 @@ const Game = {
   ox: 0, oy: 0, moving: false, moveT: 0, animT: 0,
   partyPath: null, partyPathFrom: null,
   visitedTowns: [1], lastInn: 1, steps: 0, repel: 0,
+  encounterDistance: 0,
   dialog: null, choiceBox: null, menuStack: [],
   fade: 0, fadeDir: 0, fadeCb: null,
   floorLabelT: 0, ignoreStairs: null,
@@ -428,6 +429,10 @@ const Game = {
       this.loadFloor(1, null); this.px = 10; this.py = 1; this.dir = 'u';
       this.ignoreStairs = null; this.resetPartyPath(); this.state = 'field'; return true;
     }
+    if (test === 'shop-buy') {
+      this.loadFloor(1, null); this.gold = 999; this.openShop('equip');
+      this.shop.mode = 'buy'; this.shop.sel = 1; return true;
+    }
     if (/^town-(11|21|31)$/.test(test)) {
       const floor = Number(test.split('-')[1]); this.loadFloor(floor, null);
       this.px = 10; this.py = 10; this.dir = 'u'; this.ignoreStairs = null;
@@ -479,7 +484,7 @@ const Game = {
     this.flags = {};
     this.floor = 1;
     this.visitedTowns = [1];
-    this.lastInn = 1; this.steps = 0; this.repel = 0;
+    this.lastInn = 1; this.steps = 0; this.repel = 0; this.encounterDistance = 0;
     this.loadFloor(1, null);
     this.px = 10; this.py = 12; this.dir = 'u';
     this.resetPartyPath();
@@ -535,6 +540,7 @@ const Game = {
 
   // ---------- フロア ----------
   loadFloor(floor, from) {
+    const cameFromSafeMap = !this.map || this.map.safe;
     this.floor = floor;
     this.map = Maps.build(floor, this.flags);
     if (this.map.town) {
@@ -570,7 +576,21 @@ const Game = {
     if (this.map.town) {
       if (!this.visitedTowns.includes(floor)) this.visitedTowns.push(floor);
       this.lastInn = floor;
+      this.encounterDistance = 0;
+    } else if (cameFromSafeMap || this.encounterDistance <= 0) {
+      this.encounterDistance = this.rollEncounterDistance(true);
     }
+  },
+
+  // 短い緊張区間・通常区間・長い静穏区間を混ぜ、遭遇間隔に波を作る。
+  rollEncounterDistance(leavingTown) {
+    const r = Math.random();
+    let min, max;
+    if (leavingTown) { min = 14; max = 24; }
+    else if (r < 0.18) { min = 11; max = 15; }
+    else if (r < 0.78) { min = 17; max = 27; }
+    else { min = 30; max = 43; }
+    return min + Math.floor(Math.random() * (max - min + 1));
   },
 
   fieldCharacterSrc(id) { return `assets/v5/${id}-field-v5.webp`; },
@@ -732,7 +752,8 @@ const Game = {
     // エンカウント
     if (!this.map.safe) {
       if (this.repel > 0) { this.repel--; return; }
-      if (Math.random() < 1 / 13) this.startRandomBattle();
+      this.encounterDistance--;
+      if (this.encounterDistance <= 0) this.startRandomBattle();
     }
   },
 
@@ -760,6 +781,7 @@ const Game = {
 
   onBattleEnd(r) {
     if (r.kind === 'defeat') { this.gameOver(); return; }
+    this.encounterDistance = this.rollEncounterDistance(false);
     this.state = 'field';
     this.playFieldMusic();
   },
@@ -1415,13 +1437,34 @@ const Game = {
       if (Input.pressed('down')) { s.sel = (s.sel + 1) % s.stock.length; AudioSys.sfx('cursor'); }
       if (Input.pressed('cancel')) { s.mode = 'top'; AudioSys.sfx('cancel'); return; }
       if (Input.pressed('ok')) {
-        const e = s.stock[s.sel];
-        if (this.gold < e.price) { AudioSys.sfx('cancel'); s.msg = 'おかねが たりないよ!'; return; }
+        s.pending = s.stock[s.sel]; s.confirmSel = 0; s.mode = 'buyConfirm'; s.msg = null;
         AudioSys.sfx('ok');
-        this.gold -= e.price;
-        if (e.type === 'item') this.addItem(e.id);
-        else this.equipBag.push({ slot: e.type, id: e.id });
-        s.msg = 'まいど あり!';
+      }
+      return;
+    }
+    if (s.mode === 'buyConfirm') {
+      if (Input.pressed('up') || Input.pressed('down') || Input.pressed('left') || Input.pressed('right')) {
+        s.confirmSel = 1 - s.confirmSel; AudioSys.sfx('cursor');
+      }
+      if (Input.pressed('cancel')) { s.mode = 'buy'; s.pending = null; AudioSys.sfx('cancel'); return; }
+      if (Input.pressed('ok')) {
+        if (s.confirmSel === 1) { s.mode = 'buy'; s.pending = null; AudioSys.sfx('cancel'); return; }
+        const e = s.pending;
+        if (this.gold < e.price) {
+          s.msg = 'おかねが たりないよ!'; AudioSys.sfx('cancel');
+        } else {
+          this.gold -= e.price;
+          if (e.type === 'item') this.addItem(e.id);
+          else this.equipBag.push({ slot: e.type, id: e.id });
+          s.msg = 'まいど あり! たいせつに つかってね。'; AudioSys.sfx('ok');
+        }
+        s.mode = 'buyResult';
+      }
+      return;
+    }
+    if (s.mode === 'buyResult') {
+      if (Input.pressed('ok') || Input.pressed('cancel')) {
+        s.mode = 'buy'; s.pending = null; s.msg = null; AudioSys.sfx('ok');
       }
       return;
     }
@@ -2251,7 +2294,7 @@ const Game = {
       const opts = ['かう', 'うる', 'やめる'];
       for (let i = 0; i < 3; i++) UI.text(g, opts[i], 44, 38 + i * 26, i === s.topSel ? '#fff' : '#aab', 16);
       UI.cursor(g, 24, 26 + s.topSel * 26, 'right');
-    } else if (s.mode === 'buy') {
+    } else if (s.mode === 'buy' || s.mode === 'buyConfirm' || s.mode === 'buyResult') {
       UI.window(g, 8, 8, 330, 50 + s.stock.length * 24);
       for (let i = 0; i < s.stock.length; i++) {
         const e = s.stock[i];
@@ -2268,6 +2311,21 @@ const Game = {
       else if (e.type === 'w') desc = `こうげきりょく +${WEAPONS[e.id].atk}`;
       else desc = `しゅびりょく +${ARMORS[e.id].def}`;
       UI.text(g, desc, 26, 415, '#dde', 14);
+      if (s.mode === 'buyConfirm') {
+        const pending = s.pending;
+        const name = pending.type === 'item' ? ITEMS[pending.id].name : (pending.type === 'w' ? WEAPONS[pending.id].name : ARMORS[pending.id].name);
+        UI.window(g, 86, 142, 340, 138);
+        const question = `${name}を ${pending.price}Gで`;
+        UI.text(g, question, 256 - UI.measure(g, question, 16) / 2, 176, '#fff', 16);
+        UI.text(g, 'かいますか?', 256 - UI.measure(g, 'かいますか?', 16) / 2, 202, '#fff', 16);
+        const opts = ['はい', 'いいえ'];
+        for (let i = 0; i < 2; i++) UI.text(g, opts[i], 192 + i * 118, 246, i === s.confirmSel ? '#fff' : '#8a9bab', 16, 'center');
+        UI.cursor(g, 150 + s.confirmSel * 118, 234, 'right');
+      } else if (s.mode === 'buyResult') {
+        UI.window(g, 68, 174, 376, 92);
+        UI.text(g, s.msg, 256 - UI.measure(g, s.msg, 14) / 2, 212, '#fff', 14);
+        UI.text(g, '決定でもどる', 256 - UI.measure(g, '決定でもどる', 11) / 2, 244, '#90a8b8', 11);
+      }
     } else if (s.mode === 'sell') {
       const list = this.sellList();
       UI.window(g, 8, 8, 340, 50 + Math.max(1, list.length) * 24);
@@ -2279,7 +2337,7 @@ const Game = {
       }
       if (list.length) UI.cursor(g, 24, 28 + s.sel * 24, 'right');
     }
-    if (s.msg) {
+    if (s.msg && s.mode !== 'buyResult') {
       UI.window(g, 8, 330, 400, 44);
       UI.text(g, s.msg, 26, 358, '#fff', 14);
     }
