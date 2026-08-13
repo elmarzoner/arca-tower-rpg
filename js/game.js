@@ -368,6 +368,10 @@ const Game = {
     if (test === 'village') {
       this.loadFloor(1, null); this.state = 'field'; return true;
     }
+    if (test === 'village-stairs') {
+      this.loadFloor(1, null); this.px = 10; this.py = 1; this.dir = 'u';
+      this.ignoreStairs = null; this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'party-field') {
       this.party = ['hero', 'rino', 'gald', 'fio'].map((id, i) => Chars.makeHuman(id, 8 + i));
       this.loadFloor(1, null);

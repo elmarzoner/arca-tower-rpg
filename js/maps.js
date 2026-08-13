@@ -293,7 +293,8 @@ const Maps = (() => {
     // 1Fの描き下ろし背景に合わせたV5衝突マスク。
     // 中央路・広場・西側の生活路・東側の池沿いだけを通行可能にする。
     if (map.floor === 1 && map.town) {
-      const central = x >= 9 && x <= 11 && y >= 1 && y <= 14;
+      // 北端 y=0 の塔入口（上り階段）まで中央道を接続する。
+      const central = x >= 9 && x <= 11 && y >= 0 && y <= 14;
       const plaza = x >= 6 && x <= 14 && y >= 5 && y <= 10;
       const westLane = x >= 3 && x <= 8 && y >= 5 && y <= 12;
       const eastLane = x >= 12 && x <= 16 && y >= 3 && y <= 7;
