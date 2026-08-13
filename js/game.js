@@ -27,11 +27,34 @@ const Input = (() => {
     if (k) held.delete(k);
   });
   window.addEventListener('blur', () => held.clear());
-  return {
+  const api = {
     held: k => held.has(k),
     pressed: k => pressed.has(k),
     endFrame: () => pressed.clear(),
+    virtualDown(k) {
+      if (!held.has(k)) pressed.add(k);
+      held.add(k);
+      AudioSys.ensureCtx();
+    },
+    virtualUp(k) { held.delete(k); },
   };
+  window.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('#touch-controls [data-key]').forEach(button => {
+      const key = button.dataset.key;
+      const release = e => {
+        e.preventDefault(); api.virtualUp(key); button.classList.remove('is-held');
+      };
+      button.addEventListener('pointerdown', e => {
+        e.preventDefault(); button.setPointerCapture?.(e.pointerId);
+        api.virtualDown(key); button.classList.add('is-held');
+      });
+      button.addEventListener('pointerup', release);
+      button.addEventListener('pointercancel', release);
+      button.addEventListener('lostpointercapture', release);
+      button.addEventListener('contextmenu', e => e.preventDefault());
+    });
+  });
+  return api;
 })();
 
 // ---------------- UI 描画 ----------------
@@ -251,13 +274,17 @@ const Game = {
     this.g.imageSmoothingQuality = 'high';
     this.g.setTransform(2, 0, 0, 2, 0, 0);
     const resize = () => {
-      const ww = window.innerWidth, wh = window.innerHeight - 22;
+      const touchMode = matchMedia('(hover: none) and (pointer: coarse)').matches || window.innerWidth <= 700 || window.innerHeight <= 600;
+      document.documentElement.classList.toggle('touch-ui', touchMode);
+      const portraitControls = touchMode && !(matchMedia('(orientation: landscape) and (max-height: 600px)').matches);
+      const ww = window.innerWidth, wh = window.innerHeight - (portraitControls ? 190 : 0);
       let sc = Math.min(ww / 1024, wh / 896);
       if (sc > 1) sc = Math.floor(sc * 2) / 2;
       this.canvas.style.width = (1024 * sc) + 'px';
       this.canvas.style.height = (896 * sc) + 'px';
     };
     window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', () => setTimeout(resize, 80));
     resize();
     this.state = 'title';
     this.last = performance.now();

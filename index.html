@@ -13,9 +13,11 @@
     background: #000;
     overflow: hidden;
     touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
   }
   #wrap {
-    width: 100%; height: 100%;
+    width: 100%; height: calc(100% - var(--touch-space, 0px));
     display: flex; align-items: center; justify-content: center;
     background: radial-gradient(circle at 50% 35%, #101c35 0, #050711 52%, #000 100%);
   }
@@ -30,17 +32,66 @@
     color: #74849b; font-family: monospace; font-size: 11px;
     pointer-events: none;
   }
+  #touch-controls {
+    display: none;
+    position: fixed; z-index: 20; left: 0; right: 0; bottom: 0;
+    height: 190px; padding: 8px max(14px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, rgba(2,7,18,.05), rgba(2,7,18,.94) 24%);
+    pointer-events: none;
+  }
+  .touch-ui { --touch-space: 190px; }
+  .touch-ui #touch-controls { display: flex; }
+  .touch-ui #hint { display: none; }
+  .dpad {
+    display: grid; grid-template-columns: repeat(3, 54px); grid-template-rows: repeat(3, 54px); gap: 3px;
+    pointer-events: auto;
+  }
+  .dpad [data-key="up"] { grid-column: 2; grid-row: 1; }
+  .dpad [data-key="left"] { grid-column: 1; grid-row: 2; }
+  .dpad [data-key="right"] { grid-column: 3; grid-row: 2; }
+  .dpad [data-key="down"] { grid-column: 2; grid-row: 3; }
+  .touch-actions { display: flex; align-items: flex-end; gap: 10px; pointer-events: auto; }
+  .touch-button {
+    width: 58px; height: 58px; border-radius: 50%;
+    border: 2px solid #b99750; color: #f5f7f2; background: rgba(9,25,42,.88);
+    box-shadow: inset 0 0 0 2px #416f7f, 0 4px 14px rgba(0,0,0,.55);
+    font: 700 18px/1 sans-serif; -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  .touch-button:active, .touch-button.is-held { background: #28576a; transform: translateY(2px); }
+  .touch-button.ok { width: 72px; height: 72px; background: rgba(76,38,44,.92); }
+  .touch-button.cancel { font-size: 13px; }
+  @media (orientation: landscape) and (max-height: 600px) {
+    .touch-ui { --touch-space: 0px; }
+    .touch-ui #touch-controls { height: 100%; align-items: flex-end; background: none; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    .touch-ui .dpad { grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); opacity: .84; }
+    .touch-ui .touch-button { width: 50px; height: 50px; opacity: .84; }
+    .touch-ui .touch-button.ok { width: 64px; height: 64px; }
+  }
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="screen" width="1024" height="896"></canvas></div>
 <div id="hint">矢印キー:移動 / Z・Enter:はなす・しらべる・決定 / X・Esc:メニュー・キャンセル</div>
+<div id="touch-controls" aria-label="ゲーム操作">
+  <div class="dpad" aria-label="移動">
+    <button class="touch-button" data-key="up" aria-label="上">▲</button>
+    <button class="touch-button" data-key="left" aria-label="左">◀</button>
+    <button class="touch-button" data-key="right" aria-label="右">▶</button>
+    <button class="touch-button" data-key="down" aria-label="下">▼</button>
+  </div>
+  <div class="touch-actions">
+    <button class="touch-button cancel" data-key="cancel" aria-label="戻る・メニュー">戻る<br>メニュー</button>
+    <button class="touch-button ok" data-key="ok" aria-label="決定・話す">決定</button>
+  </div>
+</div>
 <script src="js/audio.js?v=2"></script>
 <script src="js/art-v3.js?v=7"></script>
 <script src="js/chars-v3.js?v=6"></script>
 <script src="js/data.js?v=3"></script>
 <script src="js/maps.js?v=7"></script>
 <script src="js/battle.js?v=17"></script>
-<script src="js/game.js?v=24"></script>
+<script src="js/game.js?v=25"></script>
 </body>
 </html>
