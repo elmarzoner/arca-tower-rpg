@@ -249,6 +249,7 @@ const Game = {
     this.titleArt = new Image();
     this.titleArt.src = 'assets/title-keyart-v3.png';
     this.villageArt = new Image();
+    this.townArtsV5 = { 11: new Image(), 21: new Image(), 31: new Image() };
     this.battleArt = new Image();
     this.battleBackgroundsV5 = { 2: new Image(), 3: new Image(), 4: new Image() };
     this.monsterAtlas = new Image();
@@ -372,6 +373,11 @@ const Game = {
       this.loadFloor(1, null); this.px = 10; this.py = 1; this.dir = 'u';
       this.ignoreStairs = null; this.resetPartyPath(); this.state = 'field'; return true;
     }
+    if (/^town-(11|21|31)$/.test(test)) {
+      const floor = Number(test.split('-')[1]); this.loadFloor(floor, null);
+      this.px = 10; this.py = 10; this.dir = 'u'; this.ignoreStairs = null;
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'party-field') {
       this.party = ['hero', 'rino', 'gald', 'fio'].map((id, i) => Chars.makeHuman(id, 8 + i));
       this.loadFloor(1, null);
@@ -477,7 +483,9 @@ const Game = {
     this.floor = floor;
     this.map = Maps.build(floor, this.flags);
     if (this.map.town) {
-      this.loadAssetOnce(this.villageArt, 'assets/village-bg-v4.png');
+      const townArt = this.townArtsV5[this.floor];
+      if (townArt) this.loadAssetOnce(townArt, `assets/v5/town-${this.floor}-v5.webp`);
+      else this.loadAssetOnce(this.villageArt, 'assets/village-bg-v4.png');
       this.loadAssetOnce(this.fieldCharacters.villageNpcs, 'assets/v5/village-npcs-v5.webp');
     } else if (this.map.tier === 1) {
       this.loadAssetOnce(this.tier1Environment, 'assets/v5/tier1-environment-v5.webp');
@@ -952,6 +960,7 @@ const Game = {
         onEnd: r => {
           if (r.kind === 'defeat') { this.gameOver(); return; }
           this.flags[be.flag] = true;
+          this.grantBossReward(be);
           this.state = 'field';
           if (floor === 100) { this.finale(); return; }
           AudioSys.playMusic('town');
@@ -962,6 +971,16 @@ const Game = {
         },
       });
     });
+  },
+
+  grantBossReward(be) {
+    const reward = be && be.reward;
+    if (!reward) return;
+    const flag = `reward_${be.flag}`;
+    if (this.flags[flag]) return;
+    this.flags[flag] = true;
+    if (reward.type === 'item') this.addItem(reward.id, reward.count || 1);
+    else this.equipBag.push({ slot: reward.type, id: reward.id });
   },
 
   // 最終決戦後: 真実の開示 → 選択 → エンディング分岐
@@ -1581,12 +1600,14 @@ const Game = {
     const x1 = Math.ceil((camX + 512) / TS), y1 = Math.ceil((camY + 448) / TS);
     const theme = Art.TIER_THEMES[map.tier] || Art.TIER_THEMES[0];
     g.fillStyle = theme.bg; g.fillRect(0, 0, 512, 448);
-    const hasVillagePainting = map.town && this.villageArt && this.villageArt.complete && this.villageArt.naturalWidth;
+    const townPainting = map.town && this.townArtsV5 && this.townArtsV5[this.floor] && this.townArtsV5[this.floor].naturalWidth
+      ? this.townArtsV5[this.floor] : this.villageArt;
+    const hasVillagePainting = map.town && townPainting && townPainting.complete && townPainting.naturalWidth;
     if (hasVillagePainting) {
       // 村はタイルを並べず、1280×1024の描き下ろしマップをカメラで切り出す。
       const worldW = map.w * TS, worldH = map.h * TS;
-      const scaleX = this.villageArt.naturalWidth / worldW, scaleY = this.villageArt.naturalHeight / worldH;
-      g.drawImage(this.villageArt,
+      const scaleX = townPainting.naturalWidth / worldW, scaleY = townPainting.naturalHeight / worldH;
+      g.drawImage(townPainting,
         camX * scaleX, camY * scaleY, 512 * scaleX, 448 * scaleY,
         0, 0, 512, 448);
       if (map.tier > 0) {
@@ -1645,7 +1666,9 @@ const Game = {
     }
 
     // 木の梢や屋根を人物より後に再描画し、一枚絵でも遮蔽を成立させる。
-    if (hasVillagePainting) this.drawVillageForeground(g, camX, camY);
+    if (hasVillagePainting && this.floor === 1) this.drawVillageForeground(g, camX, camY);
+
+    this.drawRegionAtmosphere(g, map.tier);
 
     // 画面の縁だけを落として中央の冒険領域へ視線を集める。
     const vignette = g.createRadialGradient(256, 218, 155, 256, 218, 345);
@@ -1661,6 +1684,33 @@ const Game = {
       g.fillRect(8, 8, w, 26);
       UI.text(g, label, 18, 27, '#fff', 14);
     }
+  },
+
+  drawRegionAtmosphere(g, tier) {
+    if (tier < 2 || tier > 4) return;
+    g.save();
+    for (let i = 0; i < 18; i++) {
+      const seedX = (i * 83 + this.floor * 29) % 520;
+      const seedY = (i * 47 + this.floor * 17) % 470;
+      const phase = this.animT * (tier === 2 ? 28 : 9) + i * 1.73;
+      const x = (seedX + Math.sin(phase * .31) * 13 + 520) % 520 - 4;
+      const y = tier === 2
+        ? (seedY + phase * 2.1) % 470 - 10
+        : (seedY - phase * (tier === 3 ? 1.2 : .65) + 470) % 470 - 8;
+      if (tier === 2) {
+        g.strokeStyle = `rgba(121,224,239,${.08 + (i % 3) * .035})`;
+        g.lineWidth = 1; g.beginPath(); g.moveTo(x, y); g.lineTo(x - 2, y + 8); g.stroke();
+      } else if (tier === 3) {
+        g.fillStyle = `rgba(${i % 2 ? '202,137,77' : '164,86,192'},${.08 + (i % 4) * .025})`;
+        g.beginPath(); g.arc(x, y, 1 + (i % 3) * .45, 0, Math.PI * 2); g.fill();
+      } else {
+        const glow = 1.2 + (i % 4) * .45;
+        g.shadowColor = '#a86be5'; g.shadowBlur = 5;
+        g.fillStyle = `rgba(185,126,238,${.1 + (i % 3) * .035})`;
+        g.beginPath(); g.arc(x, y, glow, 0, Math.PI * 2); g.fill();
+      }
+    }
+    g.restore();
   },
 
   drawV5Dungeon(g, map, camX, camY, x0, y0, x1, y1, atlas) {

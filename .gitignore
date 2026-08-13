@@ -6,8 +6,10 @@ firebase-debug.log
 # Image-generation masters. Runtime uses the optimized WebP files.
 assets/v5/*-source.png
 assets/v5/*.png
+!assets/v5/town-11-v5.webp
+!assets/v5/town-21-v5.webp
+!assets/v5/town-31-v5.webp
 
 # Superseded/unused artwork
 assets/title-keyart-v2.png
 assets/party-lineup-v4.png
-

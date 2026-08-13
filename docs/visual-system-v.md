@@ -99,6 +99,9 @@
 | `assets/v5/tier4-environment-v5.webp` | Midnight dream-gallery kit | active |
 | `assets/v5/tier4-enemies-v5.webp` | Yurari, shadow rat, dark bat and Nocturna | active |
 | `assets/v5/tier4-battle-bg-v5.webp` | Midnight dream-gallery battle arena | active |
+| `assets/v5/town-11-v5.webp` | Ichinose flooded inn town | active |
+| `assets/v5/town-21-v5.webp` | Minamo restored waterworks town | active |
+| `assets/v5/town-31-v5.webp` | Bazaara midnight merchant town | active |
 | `assets/hero-v4.png` | Sora dialogue/status illustration | retained |
 | `assets/village-bg-v4.png` | 1F concept/base painting | retained temporarily |
 | `assets/environment-atlas-v4.png` | legacy fallback | deprecated |
@@ -169,3 +172,12 @@
 - Tier 4: indigo dream gallery, moonstone structures, dream mist, three normal enemies and unique boss Nocturna
 - Regional battle backgrounds: Tier 2, Tier 3 and Tier 4 load their own 16:9 arena only when battle starts
 - Runtime: enemy IDs map explicitly to regional atlas cells; legacy name-based fallback is restricted to later unfinished tiers
+
+## Generation record: front-half towns
+
+- Tool path: built-in image generation, followed by local lossy WebP conversion
+- References: `assets/village-bg-v4.png` for gameplay composition and the matching regional environment source for materials
+- Town 11: flooded limestone inn town with brass pumps and cyan waterways
+- Town 21: restored waterworks settlement with ochre stone, timber and restrained fungi
+- Town 31: midnight merchant city with moonstone, violet crystal stalls and warm lanterns
+- Runtime: each town painting is loaded only when entering its floor
