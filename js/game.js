@@ -65,6 +65,59 @@ const Input = (() => {
       button.addEventListener('lostpointercapture', release);
       button.addEventListener('contextmenu', e => e.preventDefault());
     });
+
+    // 左側のどこに触れても、その場所から使える追従式フローティングスティック。
+    const moveZone = document.getElementById('move-zone');
+    const stick = document.getElementById('floating-stick');
+    const knob = document.getElementById('stick-knob');
+    let stickPointer = null, originX = 0, originY = 0, activeMoveKeys = new Set();
+    const setMoveKeys = next => {
+      for (const key of activeMoveKeys) if (!next.has(key)) api.virtualUp(key);
+      for (const key of next) if (!activeMoveKeys.has(key)) api.virtualDown(key);
+      activeMoveKeys = next;
+    };
+    const moveStick = e => {
+      const dx = e.clientX - originX, dy = e.clientY - originY;
+      const distance = Math.hypot(dx, dy);
+      const travel = Math.min(42, distance);
+      const nx = distance ? dx / distance : 0, ny = distance ? dy / distance : 0;
+      knob.style.transform = `translate(${nx * travel}px, ${ny * travel}px)`;
+      const next = new Set();
+      if (distance >= 12) {
+        if (ny < -.38) next.add('up');
+        if (ny > .38) next.add('down');
+        if (nx < -.38) next.add('left');
+        if (nx > .38) next.add('right');
+      }
+      setMoveKeys(next);
+    };
+    const releaseStick = e => {
+      if (stickPointer !== e.pointerId) return;
+      e.preventDefault();
+      setMoveKeys(new Set());
+      stickPointer = null;
+      knob.style.transform = '';
+      stick.classList.remove('is-visible');
+    };
+    moveZone?.addEventListener('pointerdown', e => {
+      if (stickPointer !== null) return;
+      e.preventDefault();
+      stickPointer = e.pointerId; originX = e.clientX; originY = e.clientY;
+      moveZone.setPointerCapture?.(e.pointerId);
+      moveZone.classList.add('was-used');
+      stick.style.left = `${originX}px`; stick.style.top = `${originY}px`;
+      stick.classList.add('is-visible');
+      knob.style.transform = '';
+      AudioSys.ensureCtx();
+    });
+    moveZone?.addEventListener('pointermove', e => {
+      if (stickPointer !== e.pointerId) return;
+      e.preventDefault(); moveStick(e);
+    });
+    moveZone?.addEventListener('pointerup', releaseStick);
+    moveZone?.addEventListener('pointercancel', releaseStick);
+    moveZone?.addEventListener('lostpointercapture', releaseStick);
+    moveZone?.addEventListener('contextmenu', e => e.preventDefault());
   });
   return api;
 })();
