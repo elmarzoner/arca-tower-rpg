@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>アルカの塔 — Character Sprite Showcase</title>
+<style>
+  :root { color-scheme: dark; font-family: "Hiragino Kaku Gothic ProN", monospace; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; color: #eef4ff; background: radial-gradient(circle at 50% 0, #172745, #070a14 65%); }
+  main { width: min(1040px, calc(100% - 32px)); margin: auto; padding: 48px 0 64px; }
+  h1 { margin: 0; font: 700 clamp(24px, 4vw, 42px)/1.15 "Hiragino Mincho ProN", serif; letter-spacing: .03em; color: #f1d887; }
+  .lead { color: #9badca; margin: 8px 0 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  article { border: 1px solid #7589ac; outline: 2px solid #171b2a; background: linear-gradient(#16213d, #090d1e); padding: 18px; box-shadow: 6px 8px 0 #02030a; }
+  h2 { margin: 0 0 4px; color: #fff4c6; }
+  small { color: #6ed9f1; letter-spacing: .08em; }
+  canvas { display: block; width: 100%; height: auto; margin: 16px 0; background: #263853; image-rendering: auto; border: 1px solid #465b7d; }
+  p { min-height: 4.8em; margin: 0; color: #b9c6da; line-height: 1.6; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>CHARACTER SPRITE SHOWCASE</h1>
+  <p class="lead">主要4人の32×32フィールドスプライト。正面・背面・側面と歩行差分。</p>
+  <section class="grid" id="grid"></section>
+</main>
+<script src="../js/art-v3.js?v=6"></script>
+<script src="../js/chars-v3.js?v=6"></script>
+<script>
+  Art.init(); CharGen.install();
+  const CHARS = [
+    ['hero', 'ソラ', 'THE ASCENDER', '赤い短マントと胸の発光紋章。乱れた髪と前傾した輪郭で、若い旅人らしい勢いを出す。'],
+    ['rino', 'リノ', 'FIELD HEALER', '大きな白リボン、巡礼者ケープ、薬草ポーチと杖。生活に根ざした癒やし手。'],
+    ['gald', 'ガルド', 'THE SHIELD', '頬の古傷、無精ひげ、赤い片肩鎧と大盾。守る戦士の重いシルエット。'],
+    ['fio', 'フィオ', 'TRUTH SEEKER', '銀白髪と青緑の非対称ローブ。金刺繍、古書、青い結晶を持つ研究者。'],
+  ];
+  const grid = document.getElementById('grid');
+  for (const [id, name, role, desc] of CHARS) {
+    const article = document.createElement('article');
+    article.innerHTML = `<h2>${name}</h2><small>${role}</small><canvas width="192" height="80"></canvas><p>${desc}</p>`;
+    const c = article.querySelector('canvas'), g = c.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    const frames = ['d0','d1','u0','r0'];
+    for (let i = 0; i < 4; i++) {
+      const key = `${id}_${frames[i]}`;
+      const sprite = Art.get(key);
+      if (sprite) g.drawImage(sprite, 8 + i * 46, 8, 40, 40);
+    }
+    grid.appendChild(article);
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Local tools and logs
+.DS_Store
+.claude/
+firebase-debug.log
+
+# Image-generation masters. Runtime uses the optimized WebP files.
+assets/v5/*-source.png
+assets/v5/*.png
+
+# Superseded/unused artwork
+assets/title-keyart-v2.png
+assets/party-lineup-v4.png
+

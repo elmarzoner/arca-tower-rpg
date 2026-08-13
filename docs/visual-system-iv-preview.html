@@ -1,0 +1,20 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>アルカの塔 Visual System IV</title><style>
+*{box-sizing:border-box}body{margin:0;background:#050913;color:#e9f2ef;font-family:system-ui,sans-serif}main{width:min(1120px,calc(100% - 32px));margin:auto;padding:38px 0 70px}h1{margin:0;color:#ead58e;font:700 40px serif}p{color:#9db1bb}h2{margin-top:34px;color:#78dfe6;border-bottom:1px solid #36515e;padding-bottom:8px}.wide{width:100%;height:auto;display:block;border:1px solid #4f6470;box-shadow:0 18px 50px #000}.party{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.party div{height:310px;background:radial-gradient(circle at 50% 30%,#243a4e,#090e19 70%);border:1px solid #465d6b;display:flex;align-items:flex-end;justify-content:center;overflow:hidden}.party img{max-width:95%;max-height:98%;object-fit:contain}canvas{image-rendering:auto}
+</style></head><body><main><h1>VISUAL SYSTEM IV</h1><p>描き下ろし背景・人物・環境・魔物のゲーム内縮小確認。</p>
+<h2>VILLAGE</h2><img class="wide" src="../assets/village-bg-v4.png">
+<h2>MAIN PARTY</h2><section class="party"><div><img src="../assets/hero-v4.png"></div><div><img src="../assets/rino-v4.png"></div><div><img src="../assets/gald-v4.png"></div><div><img src="../assets/fio-v4.png"></div></section>
+<h2>DUNGEON MATERIALS</h2><canvas class="wide" id="dungeon" width="1024" height="640"></canvas>
+<h2>BATTLE</h2><canvas class="wide" id="battle" width="1024" height="896"></canvas>
+</main><script>
+const env=new Image(),mon=new Image(),bg=new Image();env.src='../assets/environment-atlas-v4.png';mon.src='../assets/monster-atlas-v4.png';bg.src='../assets/battle-bg-v4.png';
+Promise.all([env,mon,bg].map(im=>new Promise(r=>{im.onload=r}))).then(()=>{
+ const c=document.querySelector('#dungeon'),g=c.getContext('2d'),s=env.width/4,cols=16,rows=10;
+ const tile=(i,x,y)=>{const ax=(i%4)*s,ay=Math.floor(i/4)*s,material=i===0||i===4||i===5||i>=9;if(material){const p=s/4;g.drawImage(env,ax+(x&3)*p,ay+(y&3)*p,p,p,x*64,y*64,64,64)}else g.drawImage(env,ax,ay,s,s,x*64,y*64,64,64)};
+ for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){let i=(x===0||y===0||x===cols-1||y===rows-1)?1:0;if(x>10&&y>5)i=4;if(x>2&&x<6&&y>5)i=5;tile(i,x,y)}
+ tile(2,8,1);tile(3,8,8);tile(6,3,6);tile(7,12,4);tile(9,6,4);tile(11,9,4);
+ const b=document.querySelector('#battle'),q=b.getContext('2d');q.drawImage(bg,0,0,1024,896);const ms=mon.width/4;
+ const monster=(i,x,y,w)=>q.drawImage(mon,(i%4)*ms,Math.floor(i/4)*ms,ms,ms,x,y,w,w);
+ monster(2,102,350,260);monster(7,390,300,310);monster(8,715,340,250);
+});
+</script></body></html>
