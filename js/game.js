@@ -7,6 +7,9 @@
 const Input = (() => {
   const held = new Set();
   const pressed = new Set();
+  // 素早いタップが描画フレームの間で完結しても失われないよう、
+  // 仮想ボタンの押下をゲーム側が読むまで短時間保持する。
+  const virtualPressed = new Map();
   const MAP = {
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
     w: 'up', s: 'down', a: 'left', d: 'right',
@@ -26,13 +29,19 @@ const Input = (() => {
     const k = MAP[e.key];
     if (k) held.delete(k);
   });
-  window.addEventListener('blur', () => held.clear());
+  window.addEventListener('blur', () => { held.clear(); virtualPressed.clear(); });
   const api = {
     held: k => held.has(k),
-    pressed: k => pressed.has(k),
+    pressed(k) {
+      if (pressed.has(k)) return true;
+      const expires = virtualPressed.get(k);
+      if (!expires) return false;
+      virtualPressed.delete(k);
+      return expires >= performance.now();
+    },
     endFrame: () => pressed.clear(),
     virtualDown(k) {
-      if (!held.has(k)) pressed.add(k);
+      if (!held.has(k)) virtualPressed.set(k, performance.now() + 500);
       held.add(k);
       AudioSys.ensureCtx();
     },
