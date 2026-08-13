@@ -658,8 +658,7 @@ const Battle = {
           }
           const nick = MON_NICKNAMES[sp] || m.name;
           const member = Chars.makeMonster(sp, Math.max(1, Game.party[0].level - 1), nick);
-          const monstersInParty = Game.party.filter(x => x.kind === 'monster').length;
-          if (Game.party.length < 4 && monstersInParty < 2) {
+          if (Game.party.length < 4) {
             Game.party.push(member);
             self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
             self.push(`${nick}という なまえを つけた!`);
@@ -667,9 +666,7 @@ const Battle = {
             Game.reserve.push(member);
             self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
             self.push(`${nick}という なまえを つけた!`);
-            self.push(monstersInParty >= 2
-              ? `せんとうに つれていける まものは 2ひきまで。${nick}は ひかえで まっている。`
-              : `${nick}は ひかえで まっている。`);
+            self.push(`${nick}は ひかえで まっている。`);
           }
         },
         no: () => {

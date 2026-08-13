@@ -446,6 +446,16 @@ const Game = {
       this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
       this.state = 'field'; return true;
     }
+    if (test === 'party-monsters') {
+      this.party = [
+        Chars.makeHuman('hero', 8), Chars.makeMonster('slime', 7, 'プルた'),
+        Chars.makeMonster('bat', 7, 'モリー'), Chars.makeMonster('goblin', 7, 'ゴブすけ'),
+      ];
+      this.loadFloor(2, null); this.px = 13; this.py = 12; this.dir = 'u'; this.resetPartyPath();
+      this.partyPath = [0, 1, 2, 3].map(i => ({ x: 13, y: 12 + i, dir: 'u' }));
+      this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
+      this.state = 'field'; return true;
+    }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
     }
@@ -1364,8 +1374,8 @@ const Game = {
       this.partyMsg = 'ソラは せんとうから はずせない!';
       return;
     }
-    if (newParty.filter(m => m.kind === 'monster').length > 2) {
-      this.partyMsg = 'せんとうに つれていける まものは 2ひきまで!';
+    if (newParty.filter(m => m.kind === 'monster').length > 3) {
+      this.partyMsg = 'ソラと まもの3びきまでで ぼうけんできる!';
       return;
     }
     this.party = newParty;
@@ -1744,7 +1754,7 @@ const Game = {
     const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
     const pxx = Math.round(this.px * TS + this.ox - camX);
     const pyy = Math.round(this.py * TS + this.oy - camY);
-    const followers = this.party.filter(m => m.kind === 'human' && m.id !== 'hero').slice(0, 3);
+    const followers = this.party.filter(m => !(m.kind === 'human' && m.id === 'hero')).slice(0, 3);
     const pathTo = this.partyPath || [];
     const pathFrom = this.partyPathFrom || pathTo;
     const progress = this.moving ? this.moveT : 1;
@@ -1938,7 +1948,25 @@ const Game = {
 
   drawFieldPartyMember(g, actor, camX, camY) {
     const footX = actor.x + 16 - camX, footY = actor.y + 31 - camY;
-    this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir, this.moving, this.moveT);
+    if (actor.member.kind === 'human') {
+      this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir, this.moving, this.moveT);
+      return;
+    }
+    const def = MONSTERS[actor.member.id];
+    const spr = def && (Art.get(`${def.spr}_0`) || Art.get(`${def.spr}_d0`) || Art.get(def.spr));
+    if (!spr) return;
+    const large = !!def.big;
+    const size = large ? 48 : 38;
+    const bob = this.moving ? Math.sin(this.moveT * Math.PI * 6) * 1.5 : Math.sin(this.animT * 2.2 + actor.x) * .45;
+    this.drawActorShadow(g, footX, footY, large ? 17 : 12, large ? 5 : 3.5);
+    g.save();
+    if (actor.dir === 'l') {
+      g.translate(Math.round(footX), 0); g.scale(-1, 1);
+      g.drawImage(spr, -size / 2, Math.round(footY - size + bob + 2), size, size);
+    } else {
+      g.drawImage(spr, Math.round(footX - size / 2), Math.round(footY - size + bob + 2), size, size);
+    }
+    g.restore();
   },
 
   drawFieldNpc(g, n, camX, camY, frame) {
