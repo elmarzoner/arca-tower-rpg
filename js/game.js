@@ -52,10 +52,13 @@ const Input = (() => {
       const key = button.dataset.key;
       const release = e => {
         e.preventDefault(); api.virtualUp(key); button.classList.remove('is-held');
+        const group = button.closest('.dpad, .touch-actions');
+        if (group && !group.querySelector('.is-held')) group.classList.remove('is-active');
       };
       button.addEventListener('pointerdown', e => {
         e.preventDefault(); button.setPointerCapture?.(e.pointerId);
         api.virtualDown(key); button.classList.add('is-held');
+        button.closest('.dpad, .touch-actions')?.classList.add('is-active');
       });
       button.addEventListener('pointerup', release);
       button.addEventListener('pointercancel', release);
@@ -286,8 +289,7 @@ const Game = {
     const resize = () => {
       const touchMode = matchMedia('(hover: none) and (pointer: coarse)').matches || window.innerWidth <= 700 || window.innerHeight <= 600;
       document.documentElement.classList.toggle('touch-ui', touchMode);
-      const portraitControls = touchMode && !(matchMedia('(orientation: landscape) and (max-height: 600px)').matches);
-      const ww = window.innerWidth, wh = window.innerHeight - (portraitControls ? 190 : 0);
+      const ww = window.innerWidth, wh = window.innerHeight;
       let sc = Math.min(ww / 1024, wh / 896);
       if (sc > 1) sc = Math.floor(sc * 2) / 2;
       this.canvas.style.width = (1024 * sc) + 'px';

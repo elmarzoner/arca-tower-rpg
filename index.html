@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>アルカの塔 〜百層の物語〜</title>
 <link rel="preload" as="image" href="assets/title-keyart-v3.png">
 <link rel="preload" as="image" href="assets/v5/hero-field-v5.webp">
@@ -17,7 +17,7 @@
     -webkit-user-select: none; user-select: none;
   }
   #wrap {
-    width: 100%; height: calc(100% - var(--touch-space, 0px));
+    width: 100%; height: 100%;
     display: flex; align-items: center; justify-content: center;
     background: radial-gradient(circle at 50% 35%, #101c35 0, #050711 52%, #000 100%);
   }
@@ -34,40 +34,53 @@
   }
   #touch-controls {
     display: none;
-    position: fixed; z-index: 20; left: 0; right: 0; bottom: 0;
-    height: 190px; padding: 8px max(14px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-    align-items: center; justify-content: space-between;
-    background: linear-gradient(180deg, rgba(2,7,18,.05), rgba(2,7,18,.94) 24%);
+    position: fixed; z-index: 20; inset: 0;
     pointer-events: none;
   }
-  .touch-ui { --touch-space: 190px; }
-  .touch-ui #touch-controls { display: flex; }
+  .touch-ui #touch-controls { display: block; }
   .touch-ui #hint { display: none; }
   .dpad {
-    display: grid; grid-template-columns: repeat(3, 54px); grid-template-rows: repeat(3, 54px); gap: 3px;
-    pointer-events: auto;
+    position: absolute;
+    left: max(12px, env(safe-area-inset-left));
+    bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
+    display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 2px;
+    pointer-events: auto; opacity: .48;
+    filter: drop-shadow(0 8px 15px rgba(0,0,0,.65));
+    transition: opacity .12s ease, filter .12s ease;
   }
   .dpad [data-key="up"] { grid-column: 2; grid-row: 1; }
   .dpad [data-key="left"] { grid-column: 1; grid-row: 2; }
   .dpad [data-key="right"] { grid-column: 3; grid-row: 2; }
   .dpad [data-key="down"] { grid-column: 2; grid-row: 3; }
-  .touch-actions { display: flex; align-items: flex-end; gap: 10px; pointer-events: auto; }
-  .touch-button {
-    width: 58px; height: 58px; border-radius: 50%;
-    border: 2px solid #b99750; color: #f5f7f2; background: rgba(9,25,42,.88);
-    box-shadow: inset 0 0 0 2px #416f7f, 0 4px 14px rgba(0,0,0,.55);
-    font: 700 18px/1 sans-serif; -webkit-tap-highlight-color: transparent;
-    touch-action: none;
+  .touch-actions {
+    position: absolute;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(28px, calc(env(safe-area-inset-bottom) + 20px));
+    display: flex; align-items: flex-end; gap: 10px;
+    pointer-events: auto; opacity: .48;
+    filter: drop-shadow(0 8px 15px rgba(0,0,0,.65));
+    transition: opacity .12s ease, filter .12s ease;
   }
-  .touch-button:active, .touch-button.is-held { background: #28576a; transform: translateY(2px); }
-  .touch-button.ok { width: 72px; height: 72px; background: rgba(76,38,44,.92); }
+  .dpad.is-active, .touch-actions.is-active { opacity: .96; filter: drop-shadow(0 6px 12px rgba(0,0,0,.8)); }
+  .touch-button {
+    width: 54px; height: 54px; border-radius: 50%;
+    border: 2px solid rgba(222,190,111,.9); color: #fff; background: rgba(9,25,42,.76);
+    box-shadow: inset 0 0 0 2px rgba(79,139,156,.82), 0 3px 10px rgba(0,0,0,.55);
+    font: 700 18px/1 sans-serif; -webkit-tap-highlight-color: transparent;
+    touch-action: none; backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+  }
+  .touch-button:active, .touch-button.is-held { background: rgba(46,116,137,.96); transform: translateY(2px) scale(.97); }
+  .touch-button.ok { width: 70px; height: 70px; background: rgba(92,37,47,.82); }
   .touch-button.cancel { font-size: 13px; }
   @media (orientation: landscape) and (max-height: 600px) {
-    .touch-ui { --touch-space: 0px; }
-    .touch-ui #touch-controls { height: 100%; align-items: flex-end; background: none; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
-    .touch-ui .dpad { grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); opacity: .84; }
-    .touch-ui .touch-button { width: 50px; height: 50px; opacity: .84; }
-    .touch-ui .touch-button.ok { width: 64px; height: 64px; }
+    .touch-ui .dpad {
+      left: max(8px, env(safe-area-inset-left)); bottom: max(8px, env(safe-area-inset-bottom));
+      grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px); opacity: .42;
+    }
+    .touch-ui .touch-actions { right: max(10px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); opacity: .42; }
+    .touch-ui .dpad.is-active, .touch-ui .touch-actions.is-active { opacity: .94; }
+    .touch-ui .touch-button { width: 48px; height: 48px; }
+    .touch-ui .touch-button.ok { width: 62px; height: 62px; }
   }
 </style>
 </head>
@@ -92,6 +105,6 @@
 <script src="js/data.js?v=5"></script>
 <script src="js/maps.js?v=8"></script>
 <script src="js/battle.js?v=17"></script>
-<script src="js/game.js?v=30"></script>
+<script src="js/game.js?v=31"></script>
 </body>
 </html>
