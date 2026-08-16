@@ -299,6 +299,7 @@ const Game = {
   floorLabelT: 0, ignoreStairs: null,
   titleSel: 0, openingPage: 0, endingT: 0, shop: null,
   fallEvent: null,
+  chapterClearT: 0,
 
   // ---------- 起動 ----------
   init() {
@@ -422,6 +423,19 @@ const Game = {
       this.loadFloor(40, null); this.state = 'battle';
       Battle.start({ enemySpecs: ['b_nocturna'], boss: true, onEnd: () => {} });
       return true;
+    }
+    if (test === 'chapter-clear') {
+      this.party = [Chars.makeHuman('hero', 18), Chars.makeHuman('rino', 18), Chars.makeMonster('slime', 17, 'プルた')];
+      this.flags.boss40 = true;
+      this.loadFloor(40, null); this.showChapterClear(); return true;
+    }
+    if (test === 'chapter-gate') {
+      this.flags.boss40 = true;
+      this.loadFloor(40, null);
+      const gate = this.map.chapterGate;
+      if (!gate) return false;
+      this.px = gate.x; this.py = gate.y + 1; this.dir = 'u';
+      this.resetPartyPath(); this.state = 'field'; return true;
     }
     if (test === 'village') {
       this.loadFloor(1, null); this.state = 'field'; return true;
@@ -554,18 +568,27 @@ const Game = {
     try {
       const d = JSON.parse(localStorage.getItem('arca_tower_save_v1'));
       if (!d) return false;
+      const wasBeyondPublicRelease = d.floor > 40;
       const savedPosition = { x: d.px, y: d.py, dir: d.dir };
       Object.assign(this, {
-        gold: d.gold, floor: d.floor, px: d.px, py: d.py, dir: d.dir,
+        gold: d.gold, floor: Math.min(d.floor, 40), px: d.px, py: d.py, dir: d.dir,
         party: d.party, reserve: d.reserve, bag: d.bag, equipBag: d.equipBag,
-        flags: d.flags, visitedTowns: d.visitedTowns, lastInn: d.lastInn,
+        flags: d.flags || {}, visitedTowns: d.visitedTowns, lastInn: Math.min(d.lastInn, 40),
       });
       for (const m of [...this.party, ...this.reserve]) { m.sleep = 0; m.defend = false; m.atkBuff = 1; m.defBuff = 1; }
       this.loadFloor(this.floor, null);
-      this.px = savedPosition.x; this.py = savedPosition.y; this.dir = savedPosition.dir;
+      if (!wasBeyondPublicRelease) {
+        this.px = savedPosition.x; this.py = savedPosition.y; this.dir = savedPosition.dir;
+      }
       this.resetPartyPath();
       this.state = 'field';
       this.playFieldMusic();
+      if (wasBeyondPublicRelease) {
+        this.showDialog([
+          'この こうかいばんは 40かいまで たのしめます。',
+          'これまでの ぼうけんの きろくは のこしたまま、40かいへ もどりました。',
+        ]);
+      }
       return true;
     } catch (e) { console.error(e); return false; }
   },
@@ -667,6 +690,15 @@ const Game = {
   changeFloor(delta) {
     const target = this.floor + delta;
     if (target < 1) return;
+    if (target > 40) {
+      AudioSys.sfx('cancel');
+      this.showDialog([
+        'あさひの むこうで、とうの みちは まだ ねむっている。',
+        '『アルカの塔 第一部』は ここまで。',
+        '(40かいより さきは、こうかいごの つづきで ひらかれます。)',
+      ]);
+      return;
+    }
     AudioSys.sfx('stairs');
     this.fadeTo(() => {
       this.loadFloor(target, delta > 0 ? 'up' : 'down');
@@ -705,6 +737,7 @@ const Game = {
       case 'shop': this.updateShop(); break;
       case 'jobchange': this.updateJobChange(); break;
       case 'falling': this.updateFalling(dt); break;
+      case 'chapterclear': this.updateChapterClear(dt); break;
       case 'battle':
         Battle.handleInput();
         Battle.update(dt);
@@ -789,6 +822,9 @@ const Game = {
     const T = Art.T;
     const floorWarp = this.map.floorWarps && this.map.floorWarps.find(w => w.x === this.px && w.y === this.py);
     if (floorWarp) { this.triggerFloorWarp(floorWarp); return; }
+    if (this.map.chapterGate && this.map.chapterGate.x === this.px && this.map.chapterGate.y === this.py) {
+      this.showChapterClear(); return;
+    }
     const pit = this.map.pitfalls && this.map.pitfalls.find(p => p.x === this.px && p.y === this.py);
     if (pit && !this.flags[pit.id]) { this.triggerPitfall(pit); return; }
     // 階段
@@ -1193,7 +1229,8 @@ const Game = {
           AudioSys.playMusic('town');
           this.showDialog(be.after, () => {
             this.map = Maps.build(this.floor, this.flags);
-            this.playFieldMusic();
+            if (floor === 40) this.showChapterClear();
+            else this.playFieldMusic();
           });
         },
       });
@@ -1208,6 +1245,22 @@ const Game = {
     this.flags[flag] = true;
     if (reward.type === 'item') this.addItem(reward.id, reward.count || 1);
     else this.equipBag.push({ slot: reward.type, id: reward.id });
+  },
+
+  showChapterClear() {
+    this.flags.chapter1_clear = true;
+    this.chapterClearT = 0;
+    this.state = 'chapterclear';
+    this.save();
+    AudioSys.playMusic('ending');
+  },
+
+  updateChapterClear(dt) {
+    this.chapterClearT += dt;
+    if (this.chapterClearT < 1 || (!Input.pressed('ok') && !Input.pressed('cancel'))) return;
+    AudioSys.sfx('ok');
+    this.state = 'field';
+    this.playFieldMusic();
   },
 
   // 最終決戦後: 真実の開示 → 選択 → エンディング分岐
@@ -1681,6 +1734,7 @@ const Game = {
         break;
       case 'falling': this.drawField(g); this.drawFalling(g); break;
       case 'battle': Battle.draw(g); break;
+      case 'chapterclear': this.drawChapterClear(g); break;
       case 'ending': this.drawEnding(g); break;
       case 'gameover': this.drawGameover(g); break;
     }
@@ -1893,6 +1947,7 @@ const Game = {
     // NPC・隊列・プレイヤーを足元Yで並べ、前後関係を自然にする。
     this.drawPitfalls(g, map, camX, camY);
     this.drawCampfires(g, map, camX, camY);
+    this.drawChapterGate(g, map, camX, camY);
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
     const pxx = Math.round(this.px * TS + this.ox - camX);
@@ -2001,6 +2056,27 @@ const Game = {
       g.fillStyle = '#ffd45c'; g.beginPath(); g.ellipse(x + 1, y - 8, 4, 9 - flicker * .3, 0, 0, Math.PI * 2); g.fill();
       g.restore();
     }
+  },
+
+  drawChapterGate(g, map, camX, camY) {
+    if (!map.chapterGate) return;
+    const x = map.chapterGate.x * 32 + 16 - camX;
+    const y = map.chapterGate.y * 32 + 17 - camY;
+    const pulse = .78 + Math.sin(this.animT * 2.1) * .12;
+    g.save();
+    const beam = g.createLinearGradient(x, y - 92, x, y + 25);
+    beam.addColorStop(0, 'rgba(255,235,169,0)');
+    beam.addColorStop(.55, `rgba(255,222,139,${.18 * pulse})`);
+    beam.addColorStop(1, 'rgba(255,188,92,0)');
+    g.fillStyle = beam;
+    g.beginPath(); g.moveTo(x - 9, y - 90); g.lineTo(x + 9, y - 90); g.lineTo(x + 26, y + 25); g.lineTo(x - 26, y + 25); g.closePath(); g.fill();
+    g.shadowColor = '#ffd98c'; g.shadowBlur = 15;
+    g.strokeStyle = `rgba(255,235,177,${pulse})`; g.lineWidth = 2;
+    g.beginPath(); g.ellipse(x, y + 7, 18, 9, 0, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(x, y - 5, 13, Math.PI, Math.PI * 2); g.stroke();
+    g.fillStyle = `rgba(255,244,199,${.82 * pulse})`;
+    g.beginPath(); g.moveTo(x, y - 29); g.lineTo(x + 5, y - 17); g.lineTo(x, y - 10); g.lineTo(x - 5, y - 17); g.closePath(); g.fill();
+    g.restore();
   },
 
   drawFalling(g) {
@@ -2569,6 +2645,53 @@ const Game = {
   },
 
   // ---------- エンディング ----------
+  drawChapterClear(g) {
+    g.fillStyle = '#030817'; g.fillRect(0, 0, 512, 448);
+    if (this.titleArt && this.titleArt.complete && this.titleArt.naturalWidth) {
+      g.save();
+      g.filter = 'saturate(.62) brightness(.42) hue-rotate(9deg)';
+      g.drawImage(this.titleArt, 0, 0, 512, 448);
+      g.restore();
+    }
+    const dawn = g.createLinearGradient(0, 0, 0, 448);
+    dawn.addColorStop(0, 'rgba(37,24,76,.40)');
+    dawn.addColorStop(.42, 'rgba(234,153,94,.12)');
+    dawn.addColorStop(1, 'rgba(2,5,16,.93)');
+    g.fillStyle = dawn; g.fillRect(0, 0, 512, 448);
+    const glow = g.createRadialGradient(256, 92, 5, 256, 92, 205);
+    glow.addColorStop(0, 'rgba(255,231,165,.38)'); glow.addColorStop(1, 'rgba(255,188,97,0)');
+    g.fillStyle = glow; g.fillRect(40, 0, 432, 290);
+
+    g.textAlign = 'center';
+    g.shadowColor = '#05030d'; g.shadowBlur = 10;
+    g.font = `15px ${UI.FONT}`; g.fillStyle = '#e7cf9d';
+    g.fillText('アルカの塔', 256, 78);
+    g.font = `34px ${UI.TITLE_FONT}`; g.fillStyle = '#fff4cf';
+    g.fillText('第一部 完', 256, 126);
+    g.shadowBlur = 0;
+    g.strokeStyle = 'rgba(240,207,139,.72)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(126, 148); g.lineTo(386, 148); g.stroke();
+    g.font = `17px ${UI.FONT}`; g.fillStyle = '#edf4f5';
+    g.fillText('40F 夜の女王ノクターナ 撃破', 256, 186);
+    g.font = `13px ${UI.FONT}`; g.fillStyle = '#b9c9ce';
+    g.fillText('百年ぶりの朝が、とこよの階層へ差し込んだ。', 256, 220);
+    g.fillText('ソラたちの旅は、次の扉が開く日まで続く。', 256, 246);
+
+    const names = this.party.slice(0, 4).map(m => m.name).join('・');
+    UI.window(g, 92, 278, 328, 70);
+    g.font = `12px ${UI.FONT}`; g.fillStyle = '#91aab2';
+    g.fillText('第一部クリアメンバー', 256, 303);
+    g.font = `14px ${UI.FONT}`; g.fillStyle = '#fff1c7';
+    g.fillText(names, 256, 330);
+    if (this.chapterClearT > .75) {
+      g.font = `13px ${UI.FONT}`; g.fillStyle = '#d9e7e6';
+      g.fillText('決定：40階へ戻る（冒険は続けられます）', 256, 397);
+      g.font = `11px ${UI.FONT}`; g.fillStyle = '#82959d';
+      g.fillText('ここまでの冒険は自動で記録されました', 256, 423);
+    }
+    g.textAlign = 'left';
+  },
+
   drawEnding(g) {
     g.fillStyle = '#050b17'; g.fillRect(0, 0, 512, 448);
     if (this.titleArt && this.titleArt.complete && this.titleArt.naturalWidth) {

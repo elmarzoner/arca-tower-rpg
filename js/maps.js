@@ -164,6 +164,11 @@ const Maps = (() => {
       if (p.exit) map.tiles[p.exit.y][p.exit.x] = T.FLOOR;
       map.npcs.push({ x: 10, y: floor === 100 ? 6 : 6, spr: null, bossEvent: floor, lines: null,
         bossSpr: MONSTERS[be.boss].spr });
+    } else if (floor === 40 && p.exit) {
+      // 公開第一部の終着点。階段の代わりに、クリア画面を再訪できる朝の門を置く。
+      map.tiles[p.exit.y][p.exit.x] = T.CIRCLE;
+      map.chapterGate = { x: p.exit.x, y: p.exit.y };
+      map.name = 'あけぼのの ま';
     }
     // 100F: セツナの墓 (てんがいの まの かたすみ)
     if (floor === 100) {
