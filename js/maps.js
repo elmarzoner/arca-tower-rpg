@@ -283,7 +283,38 @@ const Maps = (() => {
     if (floor === 14 && addPitfall(map, flags)) {
       map.name = 'みずうつろの回廊';
     }
+
+    // 7F: 通過階ではなく、冒険者と火を囲める中間拠点にする。
+    if (floor === 7) addAdventurerCamp(map, rooms);
     return map;
+  }
+
+  function addAdventurerCamp(map, rooms) {
+    const occupied = (x, y) => map.chests.some(c => c.x === x && c.y === y)
+      || (map.journalAt && map.journalAt.x === x && map.journalAt.y === y)
+      || (map.flavorAt && map.flavorAt.x === x && map.flavorAt.y === y);
+    const candidates = [];
+    for (let y = 2; y < map.h - 2; y++) for (let x = 2; x < map.w - 2; x++) {
+      const spots = [[x,y], [x-1,y-1], [x+1,y-1], [x,y+1]];
+      if (spots.some(([sx, sy]) => map.tiles[sy][sx] !== T.FLOOR || occupied(sx, sy))) continue;
+      const fromEntry = Math.abs(x - map.entry.x) + Math.abs(y - map.entry.y);
+      const fromExit = Math.abs(x - map.exit.x) + Math.abs(y - map.exit.y);
+      if (fromEntry >= 5 && fromExit >= 5) candidates.push({ x, y, score: fromEntry + fromExit });
+    }
+    if (!candidates.length) return false;
+    candidates.sort((a, b) => b.score - a.score || a.y - b.y || a.x - b.x);
+    const cx = candidates[0].x, cy = candidates[0].y;
+    const npcSpots = [{ x: cx - 1, y: cy - 1 }, { x: cx + 1, y: cy - 1 }];
+    map.name = 'ほしあかりの野営地';
+    map.tiles[cy][cx] = T.CIRCLE;
+    map.campfires = [{ x: cx, y: cy }];
+    map.safeZones = [{ x: cx - 2, y: cy - 2, w: 5, h: 5 }];
+    map.npcs.push(
+      { ...npcSpots[0], spr: 'guard', event: 'camp_rest', dir: 'd', lines: null },
+      { ...npcSpots[1], spr: 'merchant', event: 'camp_story', dir: 'd', lines: null },
+    );
+    map.campCenter = { x: cx, y: cy };
+    return true;
   }
 
   function addSecretVault(map, flags) {
@@ -371,6 +402,7 @@ const Maps = (() => {
       if (!(central || plaza || westLane || eastLane || pondEdge)) return false;
     }
     for (const n of map.npcs) if (n.x === x && n.y === y) return false;
+    if (map.campfires && map.campfires.some(f => f.x === x && f.y === y)) return false;
     return true;
   }
 

@@ -475,6 +475,24 @@ const Game = {
       this.px = pit.x; this.py = pit.y; this.resetPartyPath(); this.state = 'field';
       this.triggerPitfall(pit); return true;
     }
+    if (test === 'camp-7') {
+      this.party = [Chars.makeHuman('hero', 5), Chars.makeHuman('rino', 5), Chars.makeMonster('slime', 4, 'プルた')];
+      this.loadFloor(7, null);
+      const fire = this.map.campCenter;
+      if (!fire) return false;
+      const around = [{ x: fire.x, y: fire.y + 2, dir: 'u' }, { x: fire.x - 2, y: fire.y, dir: 'r' }, { x: fire.x + 2, y: fire.y, dir: 'l' }];
+      const spot = around.find(p => Maps.walkable(this.map, p.x, p.y)) || this.map.entry;
+      this.px = spot.x; this.py = spot.y; this.dir = spot.dir || 'u';
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
+    if (test === 'camp-rest') {
+      this.party = [Chars.makeHuman('hero', 5), Chars.makeHuman('rino', 5), Chars.makeMonster('slime', 4, 'プルた')];
+      this.loadFloor(7, null); this.state = 'field'; this.campRestEvent(); return true;
+    }
+    if (test === 'camp-story') {
+      this.party = [Chars.makeHuman('hero', 5), Chars.makeHuman('rino', 5), Chars.makeMonster('slime', 4, 'プルた')];
+      this.loadFloor(7, null); this.state = 'field'; this.campStoryEvent(); return true;
+    }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
     }
@@ -600,6 +618,9 @@ const Game = {
     this.ox = 0; this.oy = 0; this.moving = false;
     this.resetPartyPath();
     this.ensurePartyFieldAssets();
+    if (this.map.npcs.some(n => ['elder', 'woman', 'man', 'child', 'merchant', 'guard'].includes(n.spr))) {
+      this.loadAssetOnce(this.fieldCharacters.villageNpcs, 'assets/v5/village-npcs-v5.webp');
+    }
     for (const n of this.map.npcs) if (this.fieldCharacters[n.spr]) this.loadFieldCharacter(n.spr);
     this.floorLabelT = 3;
     if (this.map.town) {
@@ -784,7 +805,8 @@ const Game = {
       for (const m of this.party) if (m.poison && m.hp > 1) m.hp--;
     }
     // エンカウント
-    if (!this.map.safe) {
+    const inSafeZone = this.map.safeZones && this.map.safeZones.some(z => this.px >= z.x && this.px < z.x + z.w && this.py >= z.y && this.py < z.y + z.h);
+    if (!this.map.safe && !inSafeZone) {
       if (this.repel > 0) { this.repel--; return; }
       this.encounterDistance--;
       if (this.encounterDistance <= 0) this.startRandomBattle();
@@ -955,9 +977,48 @@ const Game = {
     if (npc.event === 'inn') { this.innEvent(); return; }
     if (npc.event === 'shop_items') { this.openShop('items'); return; }
     if (npc.event === 'shop_equip') { this.openShop('equip'); return; }
+    if (npc.event === 'camp_rest') { this.campRestEvent(); return; }
+    if (npc.event === 'camp_story') { this.campStoryEvent(); return; }
     if (npc.event === 'jobchange') { this.openJobChange(); return; }
     if (npc.event && npc.event.startsWith('join_')) { this.joinEvent(npc.event); return; }
     if (npc.lines) this.showDialog(npc.lines, null, npc.spr);
+  },
+
+  campRestEvent() {
+    const first = !this.flags.camp_7_met;
+    this.flags.camp_7_met = true;
+    const intro = first ? [
+      'ばんにん「おっ、のぼりてか。ここは おれたちの やすみばだ。」',
+      '「この へやでは まものも ひに ちかづかない。すこし やすんでいけ。」',
+    ] : ['ばんにん「また きたな。ひは まだ きえていないぞ。」'];
+    this.showDialog(intro, () => {
+      this.ask('たきびの そばで やすみますか?', () => {
+        this.fadeTo(() => {
+          for (const m of this.party) { m.hp = m.maxhp; m.mp = m.maxmp; m.poison = false; m.sleep = 0; }
+          this.encounterDistance = this.rollEncounterDistance(false);
+          this.flags.camp_7_rested = true;
+          AudioSys.sfx('heal');
+          this.showDialog(['パチパチと まきの はぜる おとがする……。', '(みんなの HPとMPが かいふくした!)']);
+        });
+      }, () => this.showDialog(['ばんにん「むりは するなよ。ひは いつでも あいている。」']));
+    });
+  },
+
+  campStoryEvent() {
+    const lines = [
+      'ちょうさたい「この いしずえの かいそうは、むかし ひとの まちだったらしい。」',
+      '「ガーディオは みちを ふさぐ まものじゃない。のぼるものを ためしているんだ。」',
+    ];
+    if (this.party.some(m => m.kind === 'human' && m.id === 'rino')) {
+      lines.push('リノ「ためすために たたかうなんて……でも、まもりたいものが あるのかも。」');
+    }
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (monster) lines.push(`ちょうさたい「${monster.name}も ひの そばでは おとなしいんだな。」`);
+    if (!this.flags.camp_7_story) {
+      this.flags.camp_7_story = true;
+      lines.push('(ガーディオは ただの てきではないようだ。)');
+    }
+    this.showDialog(lines);
   },
 
   // ---------- 転職 ----------
@@ -1831,6 +1892,7 @@ const Game = {
 
     // NPC・隊列・プレイヤーを足元Yで並べ、前後関係を自然にする。
     this.drawPitfalls(g, map, camX, camY);
+    this.drawCampfires(g, map, camX, camY);
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
     const pxx = Math.round(this.px * TS + this.ox - camX);
@@ -1920,6 +1982,23 @@ const Game = {
         const pulse = .16 + Math.sin(this.animT * 3.2) * .05;
         g.fillStyle = `rgba(88,181,207,${pulse})`; g.beginPath(); g.arc(x + 16, y + 17, 11, 0, Math.PI * 2); g.fill();
       }
+      g.restore();
+    }
+  },
+
+  drawCampfires(g, map, camX, camY) {
+    if (!map.campfires) return;
+    for (const fire of map.campfires) {
+      const x = fire.x * 32 + 16 - camX, y = fire.y * 32 + 25 - camY;
+      const flicker = Math.sin(this.animT * 11 + fire.x) * 2;
+      g.save();
+      const glow = g.createRadialGradient(x, y - 7, 2, x, y - 7, 48);
+      glow.addColorStop(0, 'rgba(255,211,92,.35)'); glow.addColorStop(1, 'rgba(255,116,45,0)');
+      g.fillStyle = glow; g.fillRect(x - 48, y - 55, 96, 96);
+      g.strokeStyle = '#503522'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(x - 10, y + 3); g.lineTo(x + 10, y - 3); g.moveTo(x - 10, y - 3); g.lineTo(x + 10, y + 3); g.stroke();
+      g.fillStyle = '#e84f2f'; g.beginPath(); g.ellipse(x, y - 10, 8, 15 + flicker, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#ffd45c'; g.beginPath(); g.ellipse(x + 1, y - 8, 4, 9 - flicker * .3, 0, 0, Math.PI * 2); g.fill();
       g.restore();
     }
   },
@@ -2205,6 +2284,7 @@ const Game = {
     const checks = [
       ['ソラ「', 'hero'], ['リノ「', 'rino'], ['ガルド「', 'gald'], ['フィオ「', 'fio'],
       ['むらおさ「', 'elder'], ['みこ「', 'celest'], ['やどや「', 'merchant'],
+      ['ばんにん「', 'guard'], ['ちょうさたい「', 'merchant'],
     ];
     for (const [label, spr] of checks) if (line.startsWith(label)) return spr;
     return null;
