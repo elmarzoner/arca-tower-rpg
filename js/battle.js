@@ -657,15 +657,16 @@ const Battle = {
             return;
           }
           const nick = MON_NICKNAMES[sp] || m.name;
-          const member = Chars.makeMonster(sp, Math.max(1, Game.party[0].level - 1), nick);
+          // 加入直後から編成候補になるよう、主人公と同じレベルで迎える。
+          const member = Chars.makeMonster(sp, Math.max(1, Game.party[0].level), nick);
           if (Game.party.length < 4) {
             Game.party.push(member);
             self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
-            self.push(`${nick}という なまえを つけた!`);
+            self.push(`${nick}という なまえを つけた! (レベル${member.level})`);
           } else {
             Game.reserve.push(member);
             self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
-            self.push(`${nick}という なまえを つけた!`);
+            self.push(`${nick}という なまえを つけた! (レベル${member.level})`);
             self.push(`${nick}は ひかえで まっている。`);
           }
         },

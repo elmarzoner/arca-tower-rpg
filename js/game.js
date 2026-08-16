@@ -256,11 +256,14 @@ const Chars = {
       m.agi = Math.round(h.base.agi + h.grow.agi * (L - 1));
     } else {
       const b = MONSTERS[m.id];
-      m.maxhp = Math.round(b.hp * 0.6 + b.hp * 0.09 * L) + m.seeds.hp;
-      m.maxmp = Math.round(b.allySpells ? 8 + 2.2 * L : 2 + 0.8 * L) + m.seeds.mp;
-      m.str = Math.round(b.atk * 0.6 + b.atk * 0.05 * L) + m.seeds.str;
-      m.vit = Math.round(b.def * 0.6 + b.def * 0.05 * L) + m.seeds.vit;
-      m.agi = Math.round(b.agi * 0.6 + b.agi * 0.05 * L);
+      const steps = Math.max(0, L - 1);
+      // 敵としての数値が低い序盤種も、仲間になった瞬間から一人分の戦力になる。
+      // 種族固有値と仲間共通の最低成長を比べ、高い側を採用する。
+      m.maxhp = Math.round(Math.max(18 + 5.2 * steps, b.hp * 0.72 + 5.2 * steps, b.hp * 0.6 + b.hp * 0.09 * L)) + m.seeds.hp;
+      m.maxmp = Math.round(b.allySpells ? 12 + 2.5 * steps : 4 + 0.9 * steps) + m.seeds.mp;
+      m.str = Math.round(Math.max(10 + 2.05 * steps, b.atk * 0.72 + 2.05 * steps, b.atk * 0.6 + b.atk * 0.05 * L)) + m.seeds.str;
+      m.vit = Math.round(Math.max(8 + 1.85 * steps, b.def * 0.72 + 1.85 * steps, b.def * 0.6 + b.def * 0.05 * L)) + m.seeds.vit;
+      m.agi = Math.round(Math.max(8 + 1.75 * steps, b.agi * 0.72 + 1.75 * steps, b.agi * 0.6 + b.agi * 0.05 * L));
     }
     m.hp = Math.min(m.hp !== undefined ? m.hp : m.maxhp, m.maxhp);
     m.mp = Math.min(m.mp !== undefined ? m.mp : m.maxmp, m.maxmp);
@@ -602,7 +605,18 @@ const Game = {
         party: d.party, reserve: d.reserve, bag: d.bag, equipBag: d.equipBag,
         flags: d.flags || {}, visitedTowns: d.visitedTowns, lastInn: Math.min(d.lastInn, 40),
       });
-      for (const m of [...this.party, ...this.reserve]) { m.sleep = 0; m.defend = false; m.atkBuff = 1; m.defBuff = 1; }
+      for (const m of [...this.party, ...this.reserve]) {
+        m.sleep = 0; m.defend = false; m.atkBuff = 1; m.defBuff = 1;
+        // 旧セーブの仲間モンスターにも新しい能力計算を適用。残りHP/MPの割合は維持する。
+        if (m.kind === 'monster') {
+          const hpRate = m.maxhp > 0 ? Math.max(0, m.hp) / m.maxhp : 1;
+          const mpRate = m.maxmp > 0 ? Math.max(0, m.mp) / m.maxmp : 1;
+          m.seeds = m.seeds || { hp: 0, mp: 0, str: 0, vit: 0 };
+          Chars.recompute(m);
+          m.hp = hpRate <= 0 ? 0 : Math.max(1, Math.round(m.maxhp * Math.min(1, hpRate)));
+          m.mp = Math.round(m.maxmp * Math.min(1, mpRate));
+        }
+      }
       this.loadFloor(this.floor, null);
       if (!wasBeyondPublicRelease) {
         this.px = savedPosition.x; this.py = savedPosition.y; this.dir = savedPosition.dir;
