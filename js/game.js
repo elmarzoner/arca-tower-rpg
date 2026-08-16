@@ -507,6 +507,20 @@ const Game = {
       this.party = [Chars.makeHuman('hero', 5), Chars.makeHuman('rino', 5), Chars.makeMonster('slime', 4, 'プルた')];
       this.loadFloor(7, null); this.state = 'field'; this.campStoryEvent(); return true;
     }
+    if (test === 'story-8' || test === 'story-9') {
+      const floor = Number(test.split('-')[1]);
+      this.party = [Chars.makeHuman('hero', 6), Chars.makeMonster('slime', 5, 'プルた')];
+      this.loadFloor(floor, null);
+      const story = this.map.storySpots && this.map.storySpots[0];
+      if (!story) return false;
+      const nearby = [
+        { x: story.x, y: story.y + 1, dir: 'u' }, { x: story.x, y: story.y - 1, dir: 'd' },
+        { x: story.x + 1, y: story.y, dir: 'l' }, { x: story.x - 1, y: story.y, dir: 'r' },
+      ].find(p => Maps.walkable(this.map, p.x, p.y));
+      if (!nearby) return false;
+      this.px = nearby.x; this.py = nearby.y; this.dir = nearby.dir;
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
     }
@@ -987,6 +1001,54 @@ const Game = {
     }
     const flavorSpot = this.map.flavorSpots && this.map.flavorSpots.find(s => s.x === fx && s.y === fy);
     if (flavorSpot) { this.showDialog(flavorSpot.lines); return; }
+    const storySpot = this.map.storySpots && this.map.storySpots.find(s => s.x === fx && s.y === fy);
+    if (storySpot) { this.guardianPreludeEvent(storySpot.event); return; }
+  },
+
+  guardianPreludeEvent(event) {
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (event === 'guardian_record_8') {
+      const first = !this.flags.story_guardian_8;
+      const lines = first ? [
+        'ひびわれた せきばんに、ばんにんの ちかいが きざまれている。',
+        '『われ ガーディオ。ちからなきものを うえへ とおさない。』',
+        '『こばむためではない。みちの さきで、いのちを うしなわせないために。』',
+        'いちばん したには、あとから ほられた もじがある。',
+        '『それでも のぼるものには、わが すべてを もって こたえる。』',
+      ] : [
+        'ガーディオの ちかいが きざまれた せきばんだ。',
+        '「とおさない」という ことばは、おどしではなく いのりのように みえる。',
+      ];
+      if (monster) lines.push(`${monster.name}は せきばんの まえで しずかに すわった。`);
+      if (first) {
+        this.flags.story_guardian_8 = true;
+        lines.push('(ガーディオは、のぼりてを にくんでいるわけではないようだ。)');
+      }
+      this.showDialog(lines);
+      return;
+    }
+    if (event === 'fallen_climber_9') {
+      const first = !this.flags.story_guardian_9;
+      const lines = first ? [
+        'こわれた よろいと、ちいさな てちょうが そなえられている。',
+        '『ガーディオは わたしたちを 3ど たすけてくれた。』',
+        '『4どめ、わたしたちは かれの けいこくを きかなかった。』',
+        '『なかまを うしなったのは かれの せいではない。どうか つたえてほしい。』',
+        'てちょうの となりに、あおい いしの かけらが のこされていた。',
+      ] : [
+        'まえの のぼりてが のこした 墓標だ。',
+        'ガーディオへ あてた ことばは、まだ とどいていない。',
+      ];
+      if (monster) lines.push(`${monster.name}は はかじるしに はなを よせ、ちいさく ないた。`);
+      if (first) {
+        this.flags.story_guardian_9 = true;
+        this.addItem('mamoritane', 1);
+        AudioSys.sfx('chest');
+        lines.push('(「まもりのたね」を みつけた!)');
+        lines.push('ソラ「……ぼくが つたえる。たたかうことに なっても。」');
+      }
+      this.showDialog(lines);
+    }
   },
 
   journalCount() {

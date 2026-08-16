@@ -291,7 +291,33 @@ const Maps = (() => {
 
     // 7F: 通過階ではなく、冒険者と火を囲める中間拠点にする。
     if (floor === 7) addAdventurerCamp(map, rooms);
+
+    // 8〜9F: 10Fの門番ガーディオへつながる、調べられる物語の痕跡。
+    if (floor === 8 || floor === 9) addGuardianPrelude(map, rooms, floor);
     return map;
+  }
+
+  function addGuardianPrelude(map, rooms, floor) {
+    const occupied = (x, y) => map.chests.some(c => c.x === x && c.y === y)
+      || (map.journalAt && map.journalAt.x === x && map.journalAt.y === y)
+      || (map.flavorAt && map.flavorAt.x === x && map.flavorAt.y === y);
+    const centers = rooms.map(r => ({
+      x: Math.floor(r.x + r.w / 2), y: Math.floor(r.y + r.h / 2),
+    })).filter(p => map.tiles[p.y][p.x] === T.FLOOR && !occupied(p.x, p.y)
+      && !(p.x === map.entry.x && p.y === map.entry.y)
+      && !(p.x === map.exit.x && p.y === map.exit.y));
+    centers.sort((a, b) => {
+      const da = Math.abs(a.x - map.entry.x) + Math.abs(a.y - map.entry.y);
+      const db = Math.abs(b.x - map.entry.x) + Math.abs(b.y - map.entry.y);
+      return db - da || a.y - b.y || a.x - b.x;
+    });
+    const spot = centers[0];
+    if (!spot) return false;
+    map.tiles[spot.y][spot.x] = floor === 8 ? T.SIGN : T.PILLAR;
+    map.storySpots = [{ ...spot, event: floor === 8 ? 'guardian_record_8' : 'fallen_climber_9' }];
+    map.safeZones = [{ x: spot.x - 2, y: spot.y - 2, w: 5, h: 5 }];
+    map.name = floor === 8 ? 'ちかいの回廊' : 'まもりびとの墓標';
+    return true;
   }
 
   function addAdventurerCamp(map, rooms) {
