@@ -128,7 +128,11 @@ const Maps = (() => {
       map.name = td.name;
       for (const n of td.npcs) {
         if (n.event && flags[n.event]) continue; // 加入済みは消える
-        map.npcs.push({ x: n.x, y: n.y, spr: n.spr, lines: n.lines, event: n.event || null });
+        const wander = !n.event && !['elder', 'celest'].includes(n.spr);
+        map.npcs.push({
+          x: n.x, y: n.y, spr: n.spr, lines: n.lines, event: n.event || null,
+          wander, wanderRadius: n.spr === 'child' ? 3 : 2,
+        });
       }
     }
     // リノは11Fで待っている

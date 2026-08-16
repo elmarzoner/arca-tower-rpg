@@ -294,6 +294,7 @@ const Game = {
   party: [], reserve: [], bag: [], equipBag: [], gold: 0, flags: {},
   floor: 1, map: null, px: 10, py: 12, dir: 'd',
   ox: 0, oy: 0, moving: false, moveT: 0, animT: 0,
+  walkAnimT: 0,
   partyPath: null, partyPathFrom: null,
   visitedTowns: [1], lastInn: 1, steps: 0, repel: 0,
   encounterDistance: 0,
@@ -443,6 +444,11 @@ const Game = {
     if (test === 'village') {
       this.loadFloor(1, null); this.state = 'field'; return true;
     }
+    if (test === 'town-life') {
+      this.loadFloor(1, null); this.px = 10; this.py = 10; this.dir = 'u';
+      for (const n of this.map.npcs) if (n.wander) n.npcWait = 0;
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'village-stairs') {
       this.loadFloor(1, null); this.px = 10; this.py = 1; this.dir = 'u';
       this.ignoreStairs = null; this.resetPartyPath(); this.state = 'field'; return true;
@@ -576,6 +582,7 @@ const Game = {
     this.floor = 1;
     this.visitedTowns = [1];
     this.lastInn = 1; this.steps = 0; this.repel = 0; this.encounterDistance = 0;
+    this.walkAnimT = 0;
     this.loadFloor(1, null);
     this.px = 10; this.py = 12; this.dir = 'u';
     this.resetPartyPath();
@@ -686,6 +693,15 @@ const Game = {
       this.loadAssetOnce(this.fieldCharacters.villageNpcs, 'assets/v5/village-npcs-v5.webp');
     }
     for (const n of this.map.npcs) if (this.fieldCharacters[n.spr]) this.loadFieldCharacter(n.spr);
+    if (this.map.town) {
+      this.map.npcs.forEach((n, i) => {
+        if (!n.wander) return;
+        n.homeX = n.x; n.homeY = n.y;
+        n.dir = n.dir || (i % 2 ? 'l' : 'r');
+        n.npcWait = .8 + ((n.x * 7 + n.y * 3 + i) % 8) * .28;
+        n.npcMoving = false; n.npcMoveT = 0;
+      });
+    }
     this.floorLabelT = 3;
     if (this.map.town) {
       if (!this.visitedTowns.includes(floor)) this.visitedTowns.push(floor);
@@ -823,9 +839,11 @@ const Game = {
 
   // ---------- フィールド ----------
   updateField(dt) {
+    this.updateTownNpcs(dt);
     // 移動アニメーション
     if (this.moving) {
-      this.moveT += dt * 6.5;
+      this.walkAnimT += dt;
+      this.moveT += dt * 4.4;
       if (this.moveT >= 1) {
         this.moving = false; this.ox = 0; this.oy = 0;
         this.onStep();
@@ -856,6 +874,53 @@ const Game = {
       this.px = nx; this.py = ny;
       this.moving = true; this.moveT = 0;
       this.ox = -d[0] * 32; this.oy = -d[1] * 32;
+    }
+  },
+
+  updateTownNpcs(dt) {
+    if (!this.map || !this.map.town) return;
+    const occupiedByParty = (x, y) => {
+      if (x === this.px && y === this.py) return true;
+      return (this.partyPath || []).slice(1, 4).some(p => p.x === x && p.y === y);
+    };
+    for (const n of this.map.npcs) {
+      if (!n.wander || n.event || n.behindCounter) continue;
+      if (n.npcMoving) {
+        n.npcMoveT += dt * 2.65;
+        if (n.npcMoveT >= 1) {
+          n.npcMoveT = 1; n.npcMoving = false;
+          n.npcWait = 1.2 + Math.random() * 2.8;
+        }
+        continue;
+      }
+      // 主人公の近くでは立ち止まり、話しかけやすさを優先する。
+      if (Math.abs(n.x - this.px) + Math.abs(n.y - this.py) <= 2) {
+        n.npcWait = Math.max(n.npcWait || 0, .45); continue;
+      }
+      n.npcWait = (n.npcWait || 0) - dt;
+      if (n.npcWait > 0) continue;
+      const dirs = [
+        { id: 'l', dx: -1, dy: 0 }, { id: 'r', dx: 1, dy: 0 },
+        { id: 'u', dx: 0, dy: -1 }, { id: 'd', dx: 0, dy: 1 },
+      ];
+      // 同じ方向へ進みやすくし、毎回ふらふら向きが変わるのを防ぐ。
+      dirs.sort((a, b) => (a.id === n.dir ? -1 : b.id === n.dir ? 1 : Math.random() - .5));
+      const radius = n.wanderRadius || 2;
+      const next = dirs.find(d => {
+        const nx = n.x + d.dx, ny = n.y + d.dy;
+        if (Math.abs(nx - n.homeX) + Math.abs(ny - n.homeY) > radius) return false;
+        // 1Fの池畔にいる男性は、描き下ろし背景の岸沿いだけを往復する。
+        if (this.floor === 1 && n.homeX === 12 && n.homeY === 9
+          && (ny !== 9 || nx < 10 || nx > 12)) return false;
+        if (occupiedByParty(nx, ny) || !Maps.walkable(this.map, nx, ny)) return false;
+        if (this.map.entry && Math.abs(nx - this.map.entry.x) + Math.abs(ny - this.map.entry.y) <= 1) return false;
+        if (this.map.exit && Math.abs(nx - this.map.exit.x) + Math.abs(ny - this.map.exit.y) <= 1) return false;
+        return true;
+      });
+      if (!next) { n.npcWait = .8 + Math.random() * 1.5; continue; }
+      n.npcFromX = n.x; n.npcFromY = n.y;
+      n.x += next.dx; n.y += next.dy; n.dir = next.id;
+      n.npcMoveT = 0; n.npcMoving = true;
     }
   },
 
@@ -1002,7 +1067,11 @@ const Game = {
 
     // NPC
     const npc = this.map.npcs.find(n => n.x === fx && n.y === fy);
-    if (npc) { this.talkTo(npc); return; }
+    if (npc) {
+      npc.npcMoving = false; npc.npcMoveT = 1; npc.npcWait = 1.8;
+      npc.dir = { u: 'd', d: 'u', l: 'r', r: 'l' }[this.dir] || npc.dir;
+      this.talkTo(npc); return;
+    }
     // カウンター越しのNPC
     if (fx >= 0 && fy >= 0 && fy < this.map.h && fx < this.map.w && this.map.tiles[fy][fx] === T.COUNTER) {
       const npc2 = this.map.npcs.find(n => n.x === fx + d[0] * 0 && n.y === fy - 1 && n.behindCounter);
@@ -2071,7 +2140,13 @@ const Game = {
     this.drawChapterGate(g, map, camX, camY);
     this.drawWorldAnchor(g, map, camX, camY);
     const frame = Math.floor(this.animT * 2.5) % 2;
-    const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
+    const actors = map.npcs.map(n => {
+      const t = n.npcMoving ? Math.max(0, Math.min(1, n.npcMoveT || 0)) : 1;
+      const eased = t * t * (3 - 2 * t);
+      const x = n.npcMoving ? n.npcFromX + (n.x - n.npcFromX) * eased : n.x;
+      const y = n.npcMoving ? n.npcFromY + (n.y - n.npcFromY) * eased : n.y;
+      return { kind: 'npc', n, x, y, sortY: y * TS + 31 };
+    });
     const pxx = Math.round(this.px * TS + this.ox - camX);
     const pyy = Math.round(this.py * TS + this.oy - camY);
     const followers = this.party.filter(m => !(m.kind === 'human' && m.id === 'hero')).slice(0, 3);
@@ -2090,7 +2165,7 @@ const Game = {
     for (const actor of actors) {
       if (actor.kind === 'player') this.drawFieldHero(g, pxx, pyy, frame);
       else if (actor.kind === 'follower') this.drawFieldPartyMember(g, actor, camX, camY);
-      else this.drawFieldNpc(g, actor.n, camX, camY, frame);
+      else this.drawFieldNpc(g, actor.n, camX, camY, frame, actor.x, actor.y);
     }
 
     // 木の梢や屋根を人物より後に再描画し、一枚絵でも遮蔽を成立させる。
@@ -2374,7 +2449,7 @@ const Game = {
       const cols = 6, rows = 4;
       const cellW = sheet.naturalWidth / cols, cellH = sheet.naturalHeight / rows;
       const row = { d: 0, l: 1, r: 2, u: 3 }[this.dir] ?? 0;
-      const col = this.moving ? Math.min(5, Math.floor(this.moveT * cols)) : 0;
+      const col = this.moving ? Math.floor(this.walkAnimT * 12) % cols : 0;
       const dw = 48, dh = 66;
       g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH,
         Math.round(footX - dw / 2), Math.round(footY - dh + 3), dw, dh);
@@ -2390,7 +2465,7 @@ const Game = {
     const cols = 6, rows = 4;
     const cellW = sheet.naturalWidth / cols, cellH = sheet.naturalHeight / rows;
     const row = { d: 0, l: 1, r: 2, u: 3 }[dir] ?? 0;
-    const col = moving ? Math.min(5, Math.floor(progress * cols)) : 0;
+    const col = moving ? Math.floor(this.walkAnimT * 12) % cols : 0;
     const sizes = { rino: [47, 65], gald: [52, 68], fio: [47, 64] };
     const [dw, dh] = sizes[id] || [48, 66];
     this.drawActorShadow(g, footX, footY, Math.max(10, dw * .24), 4);
@@ -2410,7 +2485,7 @@ const Game = {
     if (!spr) return;
     const large = !!def.big;
     const size = large ? 48 : 38;
-    const bob = this.moving ? Math.sin(this.moveT * Math.PI * 6) * 1.5 : Math.sin(this.animT * 2.2 + actor.x) * .45;
+    const bob = this.moving ? Math.sin(this.walkAnimT * Math.PI * 6) * 1.2 : Math.sin(this.animT * 2.2 + actor.x) * .45;
     this.drawActorShadow(g, footX, footY, large ? 17 : 12, large ? 5 : 3.5);
     g.save();
     if (actor.dir === 'l') {
@@ -2422,9 +2497,9 @@ const Game = {
     g.restore();
   },
 
-  drawFieldNpc(g, n, camX, camY, frame) {
+  drawFieldNpc(g, n, camX, camY, frame, worldX = n.x, worldY = n.y) {
     const TS = 32;
-    const nx = Math.round(n.x * TS - camX), ny = Math.round(n.y * TS - camY);
+    const nx = Math.round(worldX * TS - camX), ny = Math.round(worldY * TS - camY);
     const footX = nx + 16, footY = ny + 31;
     if (n.bossSpr) {
       const spr = Art.get(n.bossSpr);
@@ -2446,14 +2521,24 @@ const Game = {
     if (npcCell && npcSheet && npcSheet.complete && npcSheet.naturalWidth) {
       const [col, row, dw, dh] = npcCell;
       const cellW = npcSheet.naturalWidth / 3, cellH = npcSheet.naturalHeight / 2;
-      const idle = Math.sin(this.animT * 2 + n.x * .7 + n.y) * .35;
+      const phase = n.npcMoving ? (n.npcMoveT || 0) * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
+      const lift = n.npcMoving ? Math.abs(Math.sin(phase)) * 1.35 : Math.sin(phase) * .3;
+      const lean = n.npcMoving ? Math.sin(phase * 2) * .025 : 0;
+      const squash = n.npcMoving ? Math.sin(phase * 2) * .012 : Math.sin(phase) * .003;
       this.drawActorShadow(g, footX, footY, Math.max(9, dw * .24), 3.5);
+      g.save();
+      g.translate(Math.round(footX), Math.round(footY + 2));
+      g.rotate(lean);
+      g.scale(1 - squash, 1 + squash);
+      if (n.dir === 'l') g.scale(-1, 1);
       g.drawImage(npcSheet, col * cellW, row * cellH, cellW, cellH,
-        Math.round(footX - dw / 2), Math.round(footY - dh + idle + 2), dw, dh);
+        -dw / 2, -dh - lift, dw, dh);
+      g.restore();
       return;
     }
     // V4全身立ち絵は会話専用。フィールドでは同一スケールの生成スプライトを使う。
-    const spr = Art.get(`${n.spr}_${frame}`) || Art.get(`${n.spr}_0`);
+    const walkFrame = n.npcMoving ? Math.floor((n.npcMoveT || 0) * 4) % 2 : frame;
+    const spr = Art.get(`${n.spr}_${n.dir || 'd'}${walkFrame}`) || Art.get(`${n.spr}_${walkFrame}`) || Art.get(`${n.spr}_0`);
     if (spr) {
       this.drawActorShadow(g, footX, footY, 10, 3.5);
       g.drawImage(spr, nx, ny - 2, TS, TS);
