@@ -275,7 +275,76 @@ const Maps = (() => {
         }
       }
     }
+
+    // 12F: 14Fの落とし穴からだけ入れる、壁に囲まれた小さな宝物庫。
+    if (floor === 12) addSecretVault(map, flags);
+
+    // 14F: 見て避けられる固定配置の落とし穴。初回だけ12Fへ落下する。
+    if (floor === 14 && addPitfall(map, flags)) {
+      map.name = 'みずうつろの回廊';
+    }
     return map;
+  }
+
+  function addSecretVault(map, flags) {
+    let block = null;
+    // 5×5の完全な壁領域を探し、外周を残したまま3×3の密室を掘る。
+    for (let y = 1; y <= map.h - 6 && !block; y++) {
+      for (let x = 1; x <= map.w - 6; x++) {
+        let solid = true;
+        for (let yy = y; yy < y + 5 && solid; yy++) {
+          for (let xx = x; xx < x + 5; xx++) if (map.tiles[yy][xx] !== T.WALL) { solid = false; break; }
+        }
+        if (solid) { block = { x, y }; break; }
+      }
+    }
+    if (!block) return false;
+    for (let y = block.y + 1; y <= block.y + 3; y++) {
+      for (let x = block.x + 1; x <= block.x + 3; x++) map.tiles[y][x] = T.FLOOR;
+    }
+    const arrival = { x: block.x + 2, y: block.y + 2 };
+    const chest = { x: block.x + 1, y: block.y + 1, id: 'chest_vault_12', tier: 2 };
+    const sign = { x: block.x + 3, y: block.y + 1 };
+    const portal = { x: block.x + 2, y: block.y + 3, targetFloor: 14, targetKey: 'pitReturn' };
+    map.tiles[chest.y][chest.x] = flags[chest.id] ? T.CHEST_OPEN : T.CHEST;
+    map.tiles[sign.y][sign.x] = T.SIGN;
+    map.tiles[portal.y][portal.x] = T.CIRCLE;
+    map.chests.push(chest);
+    map.secretArrival = arrival;
+    map.floorWarps = [portal];
+    map.flavorSpots = map.flavorSpots || [];
+    map.flavorSpots.push({ ...sign, lines: [
+      'ぬれた いしぶみに もじが うかんでいる。',
+      '『みずは うえから したへ。きおくは したから うえへ。』',
+      'この へやは、とうが わすれた きおくの かけららしい。',
+    ] });
+    return true;
+  }
+
+  function addPitfall(map, flags) {
+    const occupied = (x, y) => map.chests.some(c => c.x === x && c.y === y)
+      || (map.journalAt && map.journalAt.x === x && map.journalAt.y === y)
+      || (map.flavorAt && map.flavorAt.x === x && map.flavorAt.y === y);
+    const candidates = [];
+    for (let y = 2; y < map.h - 2; y++) for (let x = 2; x < map.w - 2; x++) {
+      if (map.tiles[y][x] !== T.FLOOR || occupied(x, y)) continue;
+      const openAround = [[0,-1], [0,1], [-1,0], [1,0]].filter(([dx, dy]) => map.tiles[y + dy][x + dx] === T.FLOOR).length;
+      const fromEntry = Math.abs(x - map.entry.x) + Math.abs(y - map.entry.y);
+      const fromExit = Math.abs(x - map.exit.x) + Math.abs(y - map.exit.y);
+      if (openAround >= 3 && fromEntry >= 7 && fromExit >= 5) candidates.push({ x, y, score: fromEntry + fromExit });
+    }
+    if (!candidates.length) return false;
+    candidates.sort((a, b) => b.score - a.score || a.y - b.y || a.x - b.x);
+    const spot = candidates[0];
+    map.pitfalls = [{
+      x: spot.x, y: spot.y, id: 'pit_known_14_to_12',
+      targetFloor: 12, targetKey: 'secretArrival', known: !!flags.pit_known_14_to_12,
+    }];
+    const returnDirs = [[0,1], [0,-1], [1,0], [-1,0]];
+    const returnSpot = returnDirs.map(([dx, dy]) => ({ x: spot.x + dx, y: spot.y + dy }))
+      .find(p => map.tiles[p.y][p.x] === T.FLOOR);
+    map.pitReturn = returnSpot || { x: map.entry.x, y: map.entry.y };
+    return true;
   }
 
   function build(floor, flags) {

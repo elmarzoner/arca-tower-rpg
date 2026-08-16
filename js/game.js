@@ -298,6 +298,7 @@ const Game = {
   fade: 0, fadeDir: 0, fadeCb: null,
   floorLabelT: 0, ignoreStairs: null,
   titleSel: 0, openingPage: 0, endingT: 0, shop: null,
+  fallEvent: null,
 
   // ---------- 起動 ----------
   init() {
@@ -455,6 +456,24 @@ const Game = {
       this.partyPath = [0, 1, 2, 3].map(i => ({ x: 13, y: 12 + i, dir: 'u' }));
       this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
       this.state = 'field'; return true;
+    }
+    if (test === 'pitfall-14') {
+      this.flags.pit_known_14_to_12 = false;
+      this.loadFloor(14, null);
+      const pit = this.map.pitfalls && this.map.pitfalls[0];
+      if (!pit) return false;
+      const dirs = [{ dx: 0, dy: 1, dir: 'u' }, { dx: 0, dy: -1, dir: 'd' }, { dx: 1, dy: 0, dir: 'l' }, { dx: -1, dy: 0, dir: 'r' }];
+      const near = dirs.find(d => Maps.walkable(this.map, pit.x + d.dx, pit.y + d.dy)) || dirs[0];
+      this.px = pit.x + near.dx; this.py = pit.y + near.dy; this.dir = near.dir;
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
+    if (test === 'pitfall-fall') {
+      this.flags.pit_known_14_to_12 = false;
+      this.loadFloor(14, null);
+      const pit = this.map.pitfalls && this.map.pitfalls[0];
+      if (!pit) return false;
+      this.px = pit.x; this.py = pit.y; this.resetPartyPath(); this.state = 'field';
+      this.triggerPitfall(pit); return true;
     }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
@@ -664,6 +683,7 @@ const Game = {
       case 'menu': this.updateMenu(); break;
       case 'shop': this.updateShop(); break;
       case 'jobchange': this.updateJobChange(); break;
+      case 'falling': this.updateFalling(dt); break;
       case 'battle':
         Battle.handleInput();
         Battle.update(dt);
@@ -746,6 +766,10 @@ const Game = {
   onStep() {
     const t = this.map.tiles[this.py][this.px];
     const T = Art.T;
+    const floorWarp = this.map.floorWarps && this.map.floorWarps.find(w => w.x === this.px && w.y === this.py);
+    if (floorWarp) { this.triggerFloorWarp(floorWarp); return; }
+    const pit = this.map.pitfalls && this.map.pitfalls.find(p => p.x === this.px && p.y === this.py);
+    if (pit && !this.flags[pit.id]) { this.triggerPitfall(pit); return; }
     // 階段
     if (this.ignoreStairs && (this.ignoreStairs.x !== this.px || this.ignoreStairs.y !== this.py)) {
       this.ignoreStairs = null;
@@ -787,6 +811,59 @@ const Game = {
       enemySpecs: specs, boss: false,
       onEnd: r => this.onBattleEnd(r),
     });
+  },
+
+  triggerPitfall(pit) {
+    this.flags[pit.id] = true;
+    this.moving = false; this.ox = 0; this.oy = 0;
+    AudioSys.sfx('cancel');
+    this.showDialog([
+      'ミシ……。あしもとの ひびが おおきく ひろがった!',
+      'ソラ「みんな、はなれ――」',
+      'ゆかが くずれた!',
+    ], () => {
+      this.state = 'falling';
+      this.fallEvent = { pit: { ...pit }, t: 0, transitioning: false };
+      AudioSys.sfx('stairs');
+    });
+  },
+
+  triggerFloorWarp(warp) {
+    this.moving = false; this.ox = 0; this.oy = 0;
+    AudioSys.sfx('spell');
+    this.showDialog(['ゆかの もんようが ひかりはじめた。', 'うえへ ひきあげる ちからを かんじる……。'], () => {
+      this.fadeTo(() => {
+        this.loadFloor(warp.targetFloor, null);
+        const target = this.map[warp.targetKey] || this.map.entry;
+        this.px = target.x; this.py = target.y; this.dir = 'd';
+        this.ignoreStairs = null; this.resetPartyPath();
+        this.encounterDistance = this.rollEncounterDistance(false);
+        this.state = 'field'; this.playFieldMusic();
+        this.showDialog(['14かいへ もどってきた。', 'くずれた あなには ふるい いたが わたされている。']);
+      });
+    });
+  },
+
+  updateFalling(dt) {
+    if (!this.fallEvent) { this.state = 'field'; return; }
+    this.fallEvent.t += dt;
+    if (this.fallEvent.t >= 1.25 && !this.fallEvent.transitioning) {
+      this.fallEvent.transitioning = true;
+      const event = this.fallEvent;
+      this.fadeTo(() => {
+        this.loadFloor(event.pit.targetFloor, null);
+        const arrival = this.map[event.pit.targetKey] || this.map.entry;
+        this.px = arrival.x; this.py = arrival.y; this.dir = 'd';
+        this.ignoreStairs = null; this.resetPartyPath();
+        this.encounterDistance = this.rollEncounterDistance(false);
+        this.fallEvent = null; this.state = 'field'; this.playFieldMusic();
+        this.showDialog([
+          `……${event.pit.targetFloor}かいまで おちてしまった。`,
+          'ふしぎな へやだ。ふつうの かいだんからは はいれそうにない。',
+          '(14かいの あなには いたが わたされ、つぎからは あんぜんに とおれる。)',
+        ]);
+      });
+    }
   },
 
   onBattleEnd(r) {
@@ -850,6 +927,8 @@ const Game = {
       this.showDialog(this.map.flavorAt.lines);
       return;
     }
+    const flavorSpot = this.map.flavorSpots && this.map.flavorSpots.find(s => s.x === fx && s.y === fy);
+    if (flavorSpot) { this.showDialog(flavorSpot.lines); return; }
   },
 
   journalCount() {
@@ -1539,6 +1618,7 @@ const Game = {
         if (this.state === 'shop') this.drawShop(g);
         if (this.state === 'jobchange') this.drawJobChange(g);
         break;
+      case 'falling': this.drawField(g); this.drawFalling(g); break;
       case 'battle': Battle.draw(g); break;
       case 'ending': this.drawEnding(g); break;
       case 'gameover': this.drawGameover(g); break;
@@ -1750,6 +1830,7 @@ const Game = {
     }
 
     // NPC・隊列・プレイヤーを足元Yで並べ、前後関係を自然にする。
+    this.drawPitfalls(g, map, camX, camY);
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
     const pxx = Math.round(this.px * TS + this.ox - camX);
@@ -1819,6 +1900,42 @@ const Game = {
       }
     }
     g.restore();
+  },
+
+  drawPitfalls(g, map, camX, camY) {
+    if (!map.pitfalls) return;
+    for (const pit of map.pitfalls) {
+      const x = Math.round(pit.x * 32 - camX), y = Math.round(pit.y * 32 - camY);
+      g.save();
+      g.strokeStyle = pit.known ? 'rgba(25,18,18,.92)' : 'rgba(22,28,39,.72)';
+      g.lineWidth = 2;
+      const cracks = [[16,4,14,13,7,17], [14,13,20,18,27,16], [14,13,13,23,7,28], [20,18,22,27,28,30]];
+      for (const c of cracks) {
+        g.beginPath(); g.moveTo(x + c[0], y + c[1]); g.lineTo(x + c[2], y + c[3]); g.lineTo(x + c[4], y + c[5]); g.stroke();
+      }
+      if (pit.known) {
+        g.fillStyle = '#8b633e'; g.strokeStyle = '#d0a46b'; g.lineWidth = 1;
+        for (const py of [9, 20]) { g.fillRect(x + 2, y + py, 28, 6); g.strokeRect(x + 2.5, y + py + .5, 27, 5); }
+      } else {
+        const pulse = .16 + Math.sin(this.animT * 3.2) * .05;
+        g.fillStyle = `rgba(88,181,207,${pulse})`; g.beginPath(); g.arc(x + 16, y + 17, 11, 0, Math.PI * 2); g.fill();
+      }
+      g.restore();
+    }
+  },
+
+  drawFalling(g) {
+    const t = this.fallEvent ? this.fallEvent.t : 0;
+    g.fillStyle = `rgba(1,4,12,${Math.min(.82, .28 + t * .42)})`; g.fillRect(0, 0, 512, 448);
+    g.save(); g.strokeStyle = 'rgba(155,225,245,.38)'; g.lineWidth = 2;
+    for (let i = 0; i < 24; i++) {
+      const x = (i * 71 + 29) % 520, y = ((i * 97 + t * 520) % 520) - 60;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x - 3, y + 38 + (i % 4) * 9); g.stroke();
+    }
+    g.restore();
+    const shownFloor = t < .55 ? 14 : t < 1.05 ? 13 : 12;
+    const label = `${shownFloor}F`;
+    UI.text(g, label, 256 - UI.measure(g, label, 26) / 2, 224, '#dff8ff', 26);
   },
 
   drawV5Dungeon(g, map, camX, camY, x0, y0, x1, y1, atlas) {
