@@ -294,7 +294,32 @@ const Maps = (() => {
 
     // 8〜9F: 10Fの門番ガーディオへつながる、調べられる物語の痕跡。
     if (floor === 8 || floor === 9) addGuardianPrelude(map, rooms, floor);
+
+    // 16F: 塔が保存した異世界の記憶。戦闘のない景観・物語階にする。
+    if (floor === 16) addUpsideDownSea(map, rooms);
     return map;
+  }
+
+  function addUpsideDownSea(map, rooms) {
+    const occupied = (x, y) => map.chests.some(c => c.x === x && c.y === y)
+      || (map.journalAt && map.journalAt.x === x && map.journalAt.y === y)
+      || (map.flavorAt && map.flavorAt.x === x && map.flavorAt.y === y);
+    const candidates = rooms.map(r => ({
+      x: Math.floor(r.x + r.w / 2), y: Math.floor(r.y + r.h / 2), area: r.w * r.h,
+    })).filter(p => map.tiles[p.y][p.x] === T.FLOOR && !occupied(p.x, p.y)
+      && !(p.x === map.entry.x && p.y === map.entry.y)
+      && !(p.x === map.exit.x && p.y === map.exit.y));
+    candidates.sort((a, b) => b.area - a.area || a.y - b.y || a.x - b.x);
+    const anchor = candidates[0];
+    if (!anchor) return false;
+    map.tiles[anchor.y][anchor.x] = T.PILLAR;
+    map.storySpots = [{ x: anchor.x, y: anchor.y, event: 'sky_sea_16' }];
+    map.worldAnchor = { x: anchor.x, y: anchor.y };
+    map.safeZones = [{ x: anchor.x - 3, y: anchor.y - 3, w: 7, h: 7 }];
+    map.safe = true;
+    map.skySea = true;
+    map.name = 'さかさ海の空庭';
+    return true;
   }
 
   function addGuardianPrelude(map, rooms, floor) {

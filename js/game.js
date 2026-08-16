@@ -521,6 +521,19 @@ const Game = {
       this.px = nearby.x; this.py = nearby.y; this.dir = nearby.dir;
       this.resetPartyPath(); this.state = 'field'; return true;
     }
+    if (test === 'otherworld-16') {
+      this.party = [Chars.makeHuman('hero', 10), Chars.makeHuman('rino', 9), Chars.makeMonster('aquan', 9, 'アクア')];
+      this.loadFloor(16, null);
+      const story = this.map.storySpots && this.map.storySpots[0];
+      if (!story) return false;
+      const nearby = [
+        { x: story.x, y: story.y + 1, dir: 'u' }, { x: story.x, y: story.y - 1, dir: 'd' },
+        { x: story.x + 1, y: story.y, dir: 'l' }, { x: story.x - 1, y: story.y, dir: 'r' },
+      ].find(p => Maps.walkable(this.map, p.x, p.y));
+      if (!nearby) return false;
+      this.px = nearby.x; this.py = nearby.y; this.dir = nearby.dir;
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
     }
@@ -695,6 +708,7 @@ const Game = {
 
   playFieldMusic() {
     if (this.map.town) AudioSys.playMusic('town');
+    else if (this.floor === 16) AudioSys.playMusic('mystery');
     else if (this.floor === 100) AudioSys.playMusic('mystery');
     else if (this.map.tier <= 3) AudioSys.playMusic('field1');
     else if (this.map.tier <= 7) AudioSys.playMusic('field2');
@@ -1002,7 +1016,14 @@ const Game = {
     const flavorSpot = this.map.flavorSpots && this.map.flavorSpots.find(s => s.x === fx && s.y === fy);
     if (flavorSpot) { this.showDialog(flavorSpot.lines); return; }
     const storySpot = this.map.storySpots && this.map.storySpots.find(s => s.x === fx && s.y === fy);
-    if (storySpot) { this.guardianPreludeEvent(storySpot.event); return; }
+    if (storySpot) { this.storySpotEvent(storySpot.event); return; }
+  },
+
+  storySpotEvent(event) {
+    if (event === 'guardian_record_8' || event === 'fallen_climber_9') {
+      this.guardianPreludeEvent(event); return;
+    }
+    if (event === 'sky_sea_16') this.skySeaMemoryEvent();
   },
 
   guardianPreludeEvent(event) {
@@ -1049,6 +1070,30 @@ const Game = {
       }
       this.showDialog(lines);
     }
+  },
+
+  skySeaMemoryEvent() {
+    const first = !this.flags.story_sky_sea_16;
+    const lines = first ? [
+      'すいしょうの ちゅうに ふれると、あたまの うえの うみが ひかりだした。',
+      'しらない せかいの こえ『わたしたちの ほしでは、うみが そらを ながれていた。』',
+      '『ほしばみの きりが せかいを のみこむ まえ、アルカは この けしきを きおくした。』',
+      '『せかいを すくえなくても、そこに いきた しょうこだけは うしなわないように。』',
+      'リノ「ここは まぼろしじゃない。だれかが ほんとうに みた そらなのね……。」',
+    ] : [
+      'すいしょうの なかで、さかさまの うみが ゆっくり ながれている。',
+      'ここは ほろびた せかいの きおくを のこすための かいそうだ。',
+    ];
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (monster) lines.push(`${monster.name}は うえを およぐ さかなを めで おいかけている。`);
+    if (first) {
+      this.flags.story_sky_sea_16 = true;
+      this.addItem('manadrop', 1);
+      AudioSys.sfx('spell');
+      lines.push('すいしょうから しずくが こぼれ、「マナのしずく」になった!');
+      lines.push('(アルカの塔は、いくつもの せかいの きおくを あつめている。)');
+    }
+    this.showDialog(lines);
   },
 
   journalCount() {
@@ -2010,6 +2055,7 @@ const Game = {
     this.drawPitfalls(g, map, camX, camY);
     this.drawCampfires(g, map, camX, camY);
     this.drawChapterGate(g, map, camX, camY);
+    this.drawWorldAnchor(g, map, camX, camY);
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => ({ kind: 'npc', n, sortY: n.y * TS + 31 }));
     const pxx = Math.round(this.px * TS + this.ox - camX);
@@ -2037,6 +2083,7 @@ const Game = {
     if (hasVillagePainting && this.floor === 1) this.drawVillageForeground(g, camX, camY);
 
     this.drawRegionAtmosphere(g, map.tier);
+    this.drawSkySeaAtmosphere(g, map);
 
     // 画面の縁だけを落として中央の冒険領域へ視線を集める。
     const vignette = g.createRadialGradient(256, 218, 155, 256, 218, 345);
@@ -2138,6 +2185,64 @@ const Game = {
     g.beginPath(); g.arc(x, y - 5, 13, Math.PI, Math.PI * 2); g.stroke();
     g.fillStyle = `rgba(255,244,199,${.82 * pulse})`;
     g.beginPath(); g.moveTo(x, y - 29); g.lineTo(x + 5, y - 17); g.lineTo(x, y - 10); g.lineTo(x - 5, y - 17); g.closePath(); g.fill();
+    g.restore();
+  },
+
+  drawWorldAnchor(g, map, camX, camY) {
+    if (!map.worldAnchor) return;
+    const x = map.worldAnchor.x * 32 + 16 - camX;
+    const y = map.worldAnchor.y * 32 - 23 - camY;
+    const pulse = .72 + Math.sin(this.animT * 2.4) * .16;
+    g.save();
+    const glow = g.createRadialGradient(x, y, 2, x, y, 34);
+    glow.addColorStop(0, `rgba(194,249,255,${.62 * pulse})`);
+    glow.addColorStop(1, 'rgba(79,194,224,0)');
+    g.fillStyle = glow; g.fillRect(x - 38, y - 38, 76, 76);
+    g.shadowColor = '#9ff3ff'; g.shadowBlur = 13;
+    g.fillStyle = `rgba(180,244,255,${pulse})`;
+    g.beginPath();
+    g.moveTo(x, y - 14); g.lineTo(x + 9, y); g.lineTo(x, y + 15); g.lineTo(x - 9, y); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(230,253,255,.85)'; g.lineWidth = 1;
+    g.stroke();
+    g.restore();
+  },
+
+  drawSkySeaAtmosphere(g, map) {
+    if (!map.skySea) return;
+    g.save();
+    const wash = g.createLinearGradient(0, 0, 0, 448);
+    wash.addColorStop(0, 'rgba(21,151,190,.28)');
+    wash.addColorStop(.42, 'rgba(45,120,164,.10)');
+    wash.addColorStop(1, 'rgba(4,32,64,.20)');
+    g.fillStyle = wash; g.fillRect(0, 0, 512, 448);
+
+    // 天井側を流れる水面と、ゆっくり横切る魚影。
+    for (let i = 0; i < 6; i++) {
+      const y = 20 + i * 19 + Math.sin(this.animT * 1.1 + i) * 4;
+      g.strokeStyle = `rgba(161,239,250,${.10 + (i % 3) * .035})`;
+      g.lineWidth = 1.4; g.beginPath();
+      for (let x = -20; x <= 540; x += 18) {
+        const yy = y + Math.sin(x * .036 + this.animT * 1.7 + i) * 4;
+        if (x === -20) g.moveTo(x, yy); else g.lineTo(x, yy);
+      }
+      g.stroke();
+    }
+    for (let i = 0; i < 5; i++) {
+      const x = ((i * 137 + this.animT * (9 + i * 1.8)) % 620) - 60;
+      const y = 42 + (i % 3) * 31;
+      const s = 7 + (i % 3) * 3;
+      g.fillStyle = 'rgba(5,45,72,.30)';
+      g.beginPath(); g.ellipse(x, y, s * 1.7, s * .62, 0, 0, Math.PI * 2);
+      g.moveTo(x - s * 1.55, y); g.lineTo(x - s * 2.35, y - s * .72); g.lineTo(x - s * 2.25, y + s * .72); g.closePath(); g.fill();
+    }
+    // 気泡は重力に逆らい、床から空の海へ吸い上げられる。
+    for (let i = 0; i < 20; i++) {
+      const x = (i * 79 + map.floor * 13) % 520;
+      const y = (455 - ((this.animT * (11 + i % 4) + i * 37) % 490));
+      const r = 1.2 + (i % 4) * .6;
+      g.strokeStyle = `rgba(199,247,255,${.16 + (i % 3) * .05})`;
+      g.lineWidth = 1; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.stroke();
+    }
     g.restore();
   },
 
