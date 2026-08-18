@@ -6,16 +6,50 @@
 const Battle = {
   active: false,
 
-  // V5縦切り素材。文字列推測ではなく、敵IDを明示的にセルへ割り当てる。
-  v5EnemyCells: {
-    slime: 0,
-    bat: 1,
-    rat: 2,
-    b_guardio: 3,
+  // V5アトラスは生成時の人物配置が等分セル境界を越えている。
+  // 等分幅で切ると隣の敵が混ざるため、透明境界を実測した個別の source rect を使う。
+  // rect は元画像(1983x793)上の [x, y, width, height]。
+  v5EnemyCrops: {
+    slime:      { atlas: 'battleSpritesV5',      rect: [15, 465, 316, 276] },
+    bat:        { atlas: 'battleSpritesV5',      rect: [367, 359, 526, 366] },
+    rat:        { atlas: 'battleSpritesV5',      rect: [888, 435, 428, 312] },
+    b_guardio:  { atlas: 'battleSpritesV5',      rect: [1335, 27, 640, 716] },
+    goblin:     { atlas: 'battleSpritesV5Tier2', rect: [34, 443, 372, 301] },
+    aquan:      { atlas: 'battleSpritesV5Tier2', rect: [463, 300, 432, 445] },
+    slimered:   { atlas: 'battleSpritesV5Tier2', rect: [992, 401, 321, 343] },
+    b_aquera:   { atlas: 'battleSpritesV5Tier2', rect: [1375, 44, 577, 708] },
+    mush:       { atlas: 'battleSpritesV5Tier3', rect: [20, 234, 322, 381] },
+    thief:      { atlas: 'battleSpritesV5Tier3', rect: [390, 226, 377, 406] },
+    gobsold:    { atlas: 'battleSpritesV5Tier3', rect: [789, 199, 356, 422] },
+    rock3:      { atlas: 'battleSpritesV5Tier3', rect: [1158, 246, 362, 373] },
+    b_dronzo:   { atlas: 'battleSpritesV5Tier3', rect: [1532, 169, 439, 483] },
+    ghost:      { atlas: 'battleSpritesV5Tier4', rect: [38, 184, 437, 516] },
+    shadowrat:  { atlas: 'battleSpritesV5Tier4', rect: [480, 297, 429, 417] },
+    darkbat:    { atlas: 'battleSpritesV5Tier4', rect: [933, 227, 452, 456] },
+    b_nocturna: { atlas: 'battleSpritesV5Tier4', rect: [1387, 33, 565, 700] },
   },
-  v5EnemyCellsTier2: { goblin: 0, aquan: 1, slimered: 2, b_aquera: 3 },
-  v5EnemyCellsTier3: { mush: 0, thief: 1, gobsold: 2, rock3: 3, b_dronzo: 4 },
-  v5EnemyCellsTier4: { ghost: 0, shadowrat: 1, darkbat: 2, b_nocturna: 3 },
+
+  drawV5Enemy(g, enemyId, x, y, boxW, boxH) {
+    const crop = this.v5EnemyCrops[enemyId];
+    if (!crop) return false;
+    const atlas = Game[crop.atlas];
+    if (!atlas || !atlas.complete || !atlas.naturalWidth || !atlas.naturalHeight) return false;
+
+    const [rx, ry, rw, rh] = crop.rect;
+    const scaleX = atlas.naturalWidth / 1983;
+    const scaleY = atlas.naturalHeight / 793;
+    const sourceW = rw * scaleX;
+    const sourceH = rh * scaleY;
+    const fit = Math.min(boxW / sourceW, boxH / sourceH);
+    const drawW = sourceW * fit;
+    const drawH = sourceH * fit;
+    // 元絵の比率を保って中央・接地揃えにし、横長の翼や縦長のボスを潰さない。
+    const drawX = x + (boxW - drawW) / 2;
+    const drawY = y + boxH - drawH;
+    g.drawImage(atlas, rx * scaleX, ry * scaleY, sourceW, sourceH,
+      drawX, drawY, drawW, drawH);
+    return true;
+  },
 
   atlasIndex(spr) {
     const s = spr || '';
@@ -823,37 +857,12 @@ const Battle = {
       g.beginPath();
       g.ellipse(cx + sx, baseY - 3 + sy, sw * 0.34, 6, 0, 0, Math.PI * 2);
       g.fill();
-      const v5Atlas = Game.battleSpritesV5;
-      const v5Cell = this.v5EnemyCells[e.spec];
-      const tier2Cell = this.v5EnemyCellsTier2[e.spec];
-      const tier2Atlas = Game.battleSpritesV5Tier2;
-      const tier3Cell = this.v5EnemyCellsTier3[e.spec];
-      const tier3Atlas = Game.battleSpritesV5Tier3;
-      const tier4Cell = this.v5EnemyCellsTier4[e.spec];
-      const tier4Atlas = Game.battleSpritesV5Tier4;
-      if (tier4Cell !== undefined && tier4Atlas && tier4Atlas.complete && tier4Atlas.naturalWidth) {
-        const cellW = tier4Atlas.naturalWidth / 4;
-        const inset = cellW * .065;
-        g.drawImage(tier4Atlas, tier4Cell * cellW + inset, inset,
-          cellW - inset * 2, tier4Atlas.naturalHeight - inset * 2, x, y, sw, sh);
-      } else if (tier3Cell !== undefined && tier3Atlas && tier3Atlas.complete && tier3Atlas.naturalWidth) {
-        const cellW = tier3Atlas.naturalWidth / 5;
-        // 生成時の白いセルガイド(約15px)を除外する。
-        const inset = Math.max(18, cellW * .046);
-        g.drawImage(tier3Atlas, tier3Cell * cellW + inset, inset,
-          cellW - inset * 2, tier3Atlas.naturalHeight - inset * 2, x, y, sw, sh);
-      } else if (tier2Cell !== undefined && tier2Atlas && tier2Atlas.complete && tier2Atlas.naturalWidth) {
-        const cellW = tier2Atlas.naturalWidth / 4;
-        g.drawImage(tier2Atlas, tier2Cell * cellW, 0, cellW, tier2Atlas.naturalHeight, x, y, sw, sh);
-      } else if (v5Cell !== undefined && v5Atlas && v5Atlas.complete && v5Atlas.naturalWidth) {
-        const cellW = v5Atlas.naturalWidth / 4;
-        g.drawImage(v5Atlas, v5Cell * cellW, 0, cellW, v5Atlas.naturalHeight, x, y, sw, sh);
-      } else {
+      if (!this.drawV5Enemy(g, e.spec, x, y, sw, sh)) {
         const atlas = Game.monsterAtlas;
         if (atlas && atlas.complete && atlas.naturalWidth) {
-        const cell = atlas.naturalWidth / 4, ai = this.atlasIndex(spec.spr);
-        const ax = (ai % 4) * cell, ay = Math.floor(ai / 4) * cell;
-        g.drawImage(atlas, ax, ay, cell, cell, x, y, sw, sh);
+          const cell = atlas.naturalWidth / 4, ai = this.atlasIndex(spec.spr);
+          const ax = (ai % 4) * cell, ay = Math.floor(ai / 4) * cell;
+          g.drawImage(atlas, ax, ay, cell, cell, x, y, sw, sh);
         } else if (spr) g.drawImage(spr, x, y, sw, sh);
       }
       if (e.flash > 0 && Math.floor(e.flash * 20) % 2 === 0) {

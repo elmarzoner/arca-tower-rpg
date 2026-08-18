@@ -881,11 +881,11 @@ const Game = {
   },
 
   updateOpening() {
-    const PAGE = 5;
+    const pages = this.openingPages();
     if (Input.pressed('ok') || Input.pressed('cancel')) {
       AudioSys.sfx('ok');
       this.openingPage++;
-      if (this.openingPage * PAGE >= OPENING_TEXT.length) {
+      if (this.openingPage >= pages.length) {
         this.state = 'field';
         this.playFieldMusic();
         this.showDialog([
@@ -896,6 +896,68 @@ const Game = {
         ]);
       }
     }
+  },
+
+  // 長い文章を描画幅で折り返し、段落をまたいで枠外へ出ないページへ組み直す。
+  // 論理解像度で測るため、PC・スマホの表示倍率が変わっても同じ配置になる。
+  openingPages() {
+    if (this._openingPages) return this._openingPages;
+    const g = this.g;
+    const maxWidth = 340;
+    const maxRows = 5;
+    const paragraphs = [];
+    let paragraph = [];
+    g.save();
+    g.font = `16px ${UI.FONT}`;
+    const flushParagraph = () => {
+      if (paragraph.length) paragraphs.push(paragraph);
+      paragraph = [];
+    };
+    for (const raw of OPENING_TEXT) {
+      if (!raw) { flushParagraph(); continue; }
+      let line = '';
+      for (const ch of raw) {
+        const next = line + ch;
+        if (line && g.measureText(next).width > maxWidth) {
+          // 空白区切りの語は途中で割らず、句読点だけの行も作らない。
+          const space = line.lastIndexOf(' ');
+          if (space > 0) {
+            paragraph.push(line.slice(0, space).trimEnd());
+            line = line.slice(space + 1) + (ch === ' ' ? '' : ch);
+          } else if ('、。！？）」』】'.includes(ch) && Array.from(line).length > 1) {
+            const chars = Array.from(line);
+            line = chars.pop() + ch;
+            paragraph.push(chars.join('').trimEnd());
+          } else {
+            paragraph.push(line.trimEnd());
+            line = ch === ' ' ? '' : ch;
+          }
+        } else line = next;
+      }
+      if (line) paragraph.push(line.trimEnd());
+    }
+    flushParagraph();
+    g.restore();
+
+    const pages = [];
+    let page = [];
+    const finishPage = () => {
+      if (page.length) pages.push(page);
+      page = [];
+    };
+    for (const rows of paragraphs) {
+      let rest = [...rows];
+      if (page.length && page.length + 1 + rest.length <= maxRows) {
+        page.push('', ...rest);
+        continue;
+      }
+      if (page.length) finishPage();
+      while (rest.length > maxRows) pages.push(rest.splice(0, maxRows));
+      page = rest;
+    }
+    finishPage();
+    this._openingPages = pages.length ? pages : [[]];
+    return this._openingPages;
   },
 
   // ---------- フィールド ----------
@@ -2296,9 +2358,8 @@ const Game = {
     for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; g.beginPath(); g.moveTo(Math.cos(a) * 27, Math.sin(a) * 27); g.lineTo(Math.cos(a) * 59, Math.sin(a) * 59); g.stroke(); }
     g.fillStyle = '#dffcff'; g.shadowColor = '#62e6ee'; g.shadowBlur = 14; g.beginPath(); g.arc(0, 0, 3.5, 0, Math.PI * 2); g.fill(); g.restore();
 
-    const PAGE = 5;
-    const start = this.openingPage * PAGE;
-    const lines = OPENING_TEXT.slice(start, start + PAGE);
+    const pages = this.openingPages();
+    const lines = pages[Math.min(this.openingPage, pages.length - 1)] || [];
     g.fillStyle = 'rgba(5,12,28,.78)'; g.beginPath(); g.roundRect(58, 123, 396, 190, 10); g.fill();
     g.strokeStyle = 'rgba(207,181,105,.8)'; g.lineWidth = 1.5; g.stroke();
     g.strokeStyle = 'rgba(93,211,220,.35)'; g.beginPath(); g.moveTo(82, 137); g.lineTo(430, 137); g.stroke();
