@@ -17,7 +17,7 @@
 ## Loading policy
 
 - Title critical: title key art and Sora field sheet only
-- Town: village painting and village NPC atlas on entering a town
+- Town: village painting and only the V6 direction sheets needed by its residents on entering a town
 - Tier 1 dungeon: Tier 1 environment kit on entering floors 2–9
 - Battle: battle background, party portraits and enemy atlases on battle start
 - Dialogue: each HD character illustration on first portrait use
@@ -26,7 +26,8 @@
 
 ## Character asset roles
 
-- Field: 4方向、各6フレーム歩行。足元pivotと表示寸法を統一する。
+- Main-party field: 4方向、各6フレーム歩行。足元pivotと表示寸法を統一する。
+- Town NPC field: 4方向の専用立ち姿を使い、移動補間・足運び・接地影を共通化する。
 - Dialogue: バストアップまたは既存高精細立ち絵。フィールドでは使用しない。
 - Battle: 待機、攻撃、詠唱、被弾、戦闘不能を別途用意する。
 
@@ -75,15 +76,35 @@
 - `?visualTest=dungeon-tier4`
 - `?visualTest=battle-tier4`
 - `?visualTest=battle-nocturna`
+- `?visualTest=town-life`
+- `?visualTest=town-11`
+- `?visualTest=town-21`
+- `?visualTest=town-31`
+- `?visualTest=party-monsters`
+- `?visualTest=camp-7`
+- `?visualTest=pitfall`
+- `?visualTest=lake-town-18`
+- `?visualTest=rescue-24`
+- `?visualTest=thief-town-27`
+- `?visualTest=false-home-34`
+- `?visualTest=dream-town-37`
+- `?visualTest=chapter-clear`
 
 これらはセーブデータを書き換えず、画面比較用の固定状態を直接表示する。
 
-## V5 asset manifest
+## V5 / V6 asset manifest
 
 | Asset | Role | Status |
 | --- | --- | --- |
 | `assets/v5/hero-field-v5.webp` | Sora 4 directions x 6 walk frames | active |
-| `assets/v5/village-npcs-v5.webp` | Elder, woman, man, child, merchant, guard | active |
+| `assets/v5/village-npcs-v5.webp` | Legacy front-facing NPC atlas | deprecated |
+| `assets/v6/npc-elder-directions-v6.webp` | Elder down, left, right and up field poses | active |
+| `assets/v6/npc-woman-directions-v6.webp` | Woman down, left, right and up field poses | active |
+| `assets/v6/npc-man-directions-v6.webp` | Man down, left, right and up field poses | active |
+| `assets/v6/npc-child-directions-v6.webp` | Child down, left, right and up field poses | active |
+| `assets/v6/npc-merchant-directions-v6.webp` | Merchant down, left, right and up field poses | active |
+| `assets/v6/npc-guard-directions-v6.webp` | Guard down, left, right and up field poses | active |
+| `assets/v6/npc-celest-directions-v6.webp` | Celest down, left, right and up field poses | active |
 | `assets/v5/tier1-enemies-v5.webp` | Pluru, Komorin, Toge-nezumi, Guardio | active |
 | `assets/v5/tier1-environment-v5.webp` | Tier 1 floor, wall, stairs and props | active |
 | `assets/v5/party-battle-v5.webp` | Sora, Rino, Gald and Fio battle portraits | active |
@@ -116,14 +137,14 @@
 - Final alpha master: `assets/v5/hero-field-v5.png`
 - Runtime lossless asset: `assets/v5/hero-field-v5.webp`
 
-## Generation record: village NPC atlas
+## Generation record: V6 town NPC direction sheets
 
-- Tool path: built-in image generation, followed by local chroma-key removal
-- Style references: `assets/v5/hero-field-v5-source.png`, `assets/village-bg-v4.png`
-- Layout: 3 columns x 2 rows; elder, woman, man / child, merchant, guard
-- Background key: flat `#ff00ff`
-- Final alpha master: `assets/v5/village-npcs-v5.png`
-- Runtime lossless asset: `assets/v5/village-npcs-v5.webp`
+- Tool path: built-in image generation, followed by chroma-key removal, alpha cleanup, baseline alignment and runtime WebP optimization
+- Subjects: elder, woman, man, child, red-capped merchant, navy-and-silver guard, and priestess Celest
+- Layout: one sheet per identity, 4 equal columns in `down, left, right, up` order
+- Direction rule: every column depicts the same identity, costume, scale and light source; no simple mirroring for asymmetric clothes or equipment
+- Runtime: only residents present on the current map are lazy-loaded; the front-facing V5 atlas remains a development fallback only
+- Runtime assets: `assets/v6/npc-*-directions-v6.webp`
 
 ## Generation record: Tier 1 enemy atlas
 

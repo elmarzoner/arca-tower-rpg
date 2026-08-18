@@ -59,7 +59,7 @@ const Battle = {
       const suffix = counts[sp] > 1 ? String.fromCharCode(64 + seen[sp]) : '';
       this.enemies.push({
         spec: sp, name: m.name + suffix, hp: m.hp, maxhp: m.hp,
-        atk: m.atk, def: m.def, agi: m.agi, sleep: 0, flash: 0, dead: false,
+        atk: m.atk, def: m.def, agi: m.agi, sleep: 0, flash: 0, dead: false, defendTurn: false,
       });
     }
     this.phase = 'intro';
@@ -89,6 +89,23 @@ const Battle = {
 
   aliveEnemies() { return this.enemies.filter(e => !e.dead); },
   aliveParty() { return Game.party.filter(m => m.hp > 0); },
+
+  reservedItemCount(id) {
+    return this.actions.filter(a => a.cmd === 'item' && a.item === id).length;
+  },
+
+  availableItemCount(id) {
+    const held = Game.bag.find(it => it.id === id);
+    return Math.max(0, (held ? held.n : 0) - this.reservedItemCount(id));
+  },
+
+  battleItemList() {
+    return Game.bag.flatMap(it => {
+      if (!['heal', 'mp', 'cure_poison', 'bait'].includes(ITEMS[it.id].kind)) return [];
+      const n = this.availableItemCount(it.id);
+      return n > 0 ? [{ id: it.id, n }] : [];
+    });
+  },
 
   // ---------------- 更新 ----------------
   update(dt) {
@@ -178,10 +195,11 @@ const Battle = {
       return;
     }
     if (menu.kind === 'targetA') {
-      const n = Game.party.length;
+      const targets = menu.list || Game.party;
+      const n = targets.length;
       if (Input.pressed('up') || Input.pressed('left')) { menu.sel = (menu.sel + n - 1) % n; AudioSys.sfx('cursor'); }
       if (Input.pressed('down') || Input.pressed('right')) { menu.sel = (menu.sel + 1) % n; AudioSys.sfx('cursor'); }
-      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(Game.party[menu.sel]); }
+      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); }
       if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
@@ -220,7 +238,8 @@ const Battle = {
           this.commitAction({ member, cmd: 'defend' });
           break;
         case 3: { // どうぐ
-          const list = Game.bag.filter(it => ['heal', 'mp', 'cure_poison', 'bait'].includes(ITEMS[it.id].kind));
+          // 先に選んだ仲間が予約した分を除き、このターンにまだ使える数だけを表示する。
+          const list = this.battleItemList();
           if (list.length === 0) { this.push('つかえる どうぐが ない!'); return; }
           this.menu = { kind: 'item', sel: 0, list, back: menu };
           break;
@@ -237,10 +256,24 @@ const Battle = {
       const spId = menu.list[menu.sel];
       const sp = SPELLS[spId];
       if (member.mp < sp.mp) { AudioSys.sfx('cancel'); this.push('MPが たりない!'); return; }
+      const validTarget = sp.target !== 'ally' ? null : sp.kind === 'revive'
+        ? p => p.hp <= 0
+        : sp.kind === 'heal' ? p => p.hp > 0 && p.hp < p.maxhp : null;
+      const noTargetText = sp.kind === 'revive'
+        ? 'いきかえられる なかまが いない!'
+        : sp.kind === 'heal' ? 'HPが へっている なかまが いない!' : null;
+      if (validTarget && !Game.party.some(validTarget)) {
+        AudioSys.sfx('cancel'); this.push(noTargetText); return;
+      }
+      if (sp.kind === 'heal' && sp.target === 'party' && !this.aliveParty().some(p => p.hp < p.maxhp)) {
+        AudioSys.sfx('cancel'); this.push('HPが へっている なかまが いない!'); return;
+      }
       AudioSys.sfx('ok');
       if (sp.target === 'enemy') this.pickEnemy(t => this.commitAction({ member, cmd: 'spell', spell: spId, target: t }), menu);
       else if (sp.target === 'enemies') this.commitAction({ member, cmd: 'spell', spell: spId });
-      else if (sp.target === 'ally') this.pickAlly(t => this.commitAction({ member, cmd: 'spell', spell: spId, target: t }), menu);
+      else if (sp.target === 'ally') {
+        this.pickAlly(t => this.commitAction({ member, cmd: 'spell', spell: spId, target: t }), menu, validTarget, noTargetText);
+      }
       else this.commitAction({ member, cmd: 'spell', spell: spId });
       return;
     }
@@ -248,9 +281,26 @@ const Battle = {
     if (menu.kind === 'item') {
       const it = menu.list[menu.sel];
       const item = ITEMS[it.id];
+      if (this.availableItemCount(it.id) <= 0) {
+        AudioSys.sfx('cancel');
+        this.push(`${item.name}は もう このターンに つかえない!`);
+        this.menu = { kind: 'cmd', sel: 3 };
+        return;
+      }
+      const validTarget = item.kind === 'heal' ? p => p.hp > 0 && p.hp < p.maxhp
+        : item.kind === 'mp' ? p => p.hp > 0 && p.mp < p.maxmp
+        : item.kind === 'cure_poison' ? p => p.hp > 0 && p.poison : null;
+      const noTargetText = item.kind === 'heal' ? 'HPが へっている なかまが いない!'
+        : item.kind === 'mp' ? 'MPが へっている なかまが いない!'
+        : item.kind === 'cure_poison' ? 'どくに おかされた なかまが いない!' : null;
+      if (validTarget && !Game.party.some(validTarget)) {
+        AudioSys.sfx('cancel'); this.push(noTargetText); return;
+      }
       AudioSys.sfx('ok');
       if (item.kind === 'bait') this.commitAction({ member, cmd: 'item', item: it.id });
-      else this.pickAlly(t => this.commitAction({ member, cmd: 'item', item: it.id, target: t }), menu);
+      else {
+        this.pickAlly(t => this.commitAction({ member, cmd: 'item', item: it.id, target: t }), menu, validTarget, noTargetText);
+      }
       return;
     }
   },
@@ -260,12 +310,25 @@ const Battle = {
     if (alive.length === 1) { onPick(alive[0]); return; }
     this.menu = { kind: 'targetE', sel: 0, onPick, back };
   },
-  pickAlly(onPick, back) {
-    if (Game.party.length === 1) { onPick(Game.party[0]); return; }
-    this.menu = { kind: 'targetA', sel: 0, onPick, back };
+  pickAlly(onPick, back, validTarget = null, noTargetText = null) {
+    const targets = validTarget ? Game.party.filter(validTarget) : [...Game.party];
+    if (targets.length === 0) {
+      AudioSys.sfx('cancel');
+      this.push(noTargetText || 'たいしょうに できる なかまが いない!');
+      return;
+    }
+    if (targets.length === 1) { onPick(targets[0]); return; }
+    this.menu = { kind: 'targetA', sel: 0, list: targets, onPick, back };
   },
 
   commitAction(a) {
+    // 対象選択中に予約状況が変わっても、在庫を超える行動は確定させない。
+    if (a.cmd === 'item' && this.availableItemCount(a.item) <= 0) {
+      AudioSys.sfx('cancel');
+      this.push(`${ITEMS[a.item].name}は もう このターンに つかえない!`);
+      this.menu = { kind: 'cmd', sel: 3 };
+      return;
+    }
     this.actions.push(a);
     this.memberIdx++;
     this.skipToFirstAlive();
@@ -353,7 +416,7 @@ const Battle = {
         const atk = Chars.attackOf(m) * m.atkBuff;
         let dmg;
         if (crit) dmg = Math.floor(atk * (0.9 + Math.random() * 0.2));
-        else dmg = this.physDamage(atk, t.def, false);
+        else dmg = this.physDamage(atk, t.def, t.defendTurn);
         const self = this;
         if (crit) this.push('かいしんの いちげき!!', () => AudioSys.sfx('crit'));
         if (dmg === 0) this.push('ミス! ダメージを あたえられない!');
@@ -384,19 +447,33 @@ const Battle = {
       case 'spell': this.castSpell(m, a); break;
       case 'item': {
         const item = ITEMS[a.item];
+        const held = Game.bag.find(it => it.id === a.item);
+        if (!held || held.n <= 0) {
+          this.push(`${item.name}は もう のこっていなかった!`);
+          break;
+        }
+        const t = a.target;
+        const stillValid = item.kind === 'bait' ? !this.bait
+          : item.kind === 'heal' ? t && t.hp > 0 && t.hp < t.maxhp
+          : item.kind === 'mp' ? t && t.hp > 0 && t.mp < t.maxmp
+          : item.kind === 'cure_poison' ? t && t.hp > 0 && t.poison
+          : true;
+        if (!stillValid) {
+          this.push(`${item.name}を つかう ひつようは なくなった。`);
+          break;
+        }
+        // 予約は行動選択時、実際の消費はこの行動が成立した時にだけ行う。
         Game.removeItem(a.item);
         this.push(`${m.name}は ${item.name}を つかった!`);
         if (item.kind === 'bait') {
           this.bait = true;
           this.push('まものたちが においに きょうみを もったようだ!');
         } else if (item.kind === 'heal') {
-          const t = a.target;
           const v = item.pow[0] + Math.floor(Math.random() * (item.pow[1] - item.pow[0] + 1));
           const healed = Math.min(t.maxhp - t.hp, v);
           t.hp += healed;
           this.push(`${t.name}の HPが ${healed} かいふくした!`, () => AudioSys.sfx('heal'));
         } else if (item.kind === 'mp') {
-          const t = a.target;
           const v = Math.min(t.maxmp - t.mp, item.pow[0]);
           t.mp += v;
           this.push(`${t.name}の MPが ${v} かいふくした!`, () => AudioSys.sfx('heal'));
@@ -412,13 +489,26 @@ const Battle = {
   castSpell(m, a) {
     const sp = SPELLS[a.spell];
     if (m.mp < sp.mp) { this.push(`${m.name}は じゅもんを となえたが MPが たりない!`); return; }
+    if (sp.kind === 'heal') {
+      const targets = sp.target === 'party' ? this.aliveParty() : [a.target || m];
+      if (!targets.some(t => t.hp > 0 && t.hp < t.maxhp)) {
+        this.push(`${sp.name}を となえる ひつようは なくなった。`); return;
+      }
+    }
+    if (sp.kind === 'revive' && (!a.target || a.target.hp > 0)) {
+      this.push(`${sp.name}を となえる ひつようは なくなった。`); return;
+    }
     m.mp -= sp.mp;
     this.push(`${m.name}は ${sp.name}を となえた!`, () => {
       AudioSys.sfx(sp.fx);
-      this.addFx(sp.kind === 'heal' || sp.kind === 'revive' ? 'heal' :
-        a.spell.startsWith('hini') ? 'fire' : a.spell.startsWith('biri') ? 'lightning' :
-        a.spell.startsWith('hiya') ? 'ice' : sp.kind === 'sleep' ? 'sleep' : 'magic',
-        sp.target === 'ally' ? { party: a.target || m } : { enemies: true }, .75);
+      const fxKind = sp.kind === 'heal' || sp.kind === 'revive' ? 'heal' :
+        a.spell.startsWith('hino') ? 'fire' : a.spell.startsWith('biri') ? 'lightning' :
+        a.spell.startsWith('hiya') ? 'ice' : sp.kind === 'sleep' ? 'sleep' : 'magic';
+      if (sp.target === 'party') {
+        for (const t of this.aliveParty()) this.addFx(fxKind, { party: t }, .75);
+      } else {
+        this.addFx(fxKind, sp.target === 'ally' ? { party: a.target || m } : { enemies: true }, .75);
+      }
     });
     const self = this;
     const dmgRoll = () => sp.pow[0] + Math.floor(Math.random() * (sp.pow[1] - sp.pow[0] + 1));
@@ -436,9 +526,15 @@ const Battle = {
         break;
       }
       case 'heal': {
-        const t = a.target || m;
-        const v = Math.min(t.maxhp - t.hp, dmgRoll());
-        this.push(`${t.name}の HPが ${v} かいふくした!`, () => { t.hp += v; });
+        const targets = sp.target === 'party' ? this.aliveParty() : [a.target || m];
+        let healedAnyone = false;
+        for (const t of targets) {
+          const v = Math.min(t.maxhp - t.hp, dmgRoll());
+          if (v <= 0) continue;
+          healedAnyone = true;
+          this.push(`${t.name}の HPが ${v} かいふくした!`, () => { t.hp += v; });
+        }
+        if (!healedAnyone) this.push('しかし HPは まんたんだった。');
         break;
       }
       case 'revive': {
@@ -474,6 +570,9 @@ const Battle = {
 
   execEnemyAction(e) {
     if (e.dead) return;
+    // 防御は次にこの敵の行動順が来るまで持続する。行動開始時に解除し、
+    // 今回も防御を選んだ場合だけ下で再び有効にする。
+    e.defendTurn = false;
     if (e.sleep > 0) { this.push(`${e.name}は ねむっている……`); return; }
     const spec = MONSTERS[e.spec];
     const act = spec.acts[Math.floor(Math.random() * spec.acts.length)];
@@ -628,13 +727,20 @@ const Battle = {
     }
     // なかま勧誘 (レア。ほしにくで確率3倍)
     this.tameCandidate = null;
-    if (!this.boss && this.defeatedTameable.length > 0 && Game.rosterCount() < 12) {
+    if (!this.boss && this.defeatedTameable.length > 0 && Game.rosterCount() < (Game.maxRoster || 20)) {
       // 同種はパーティと控えを合わせて1体まで。倒した順の最後から未加入種を探す。
       const eligible = [...new Set(this.defeatedTameable)].filter(sp => !Game.hasMonsterAlly(sp));
       const sp = eligible[eligible.length - 1];
       if (sp) {
-        const rate = Math.min(0.5, MONSTERS[sp].tame * (this.bait ? 3 : 1));
-        if (Math.random() < rate) this.tameCandidate = sp;
+        const hasAnyMonster = [...Game.party, ...Game.reserve].some(m => m.kind === 'monster');
+        const pity = (Number(Game.flags.tame_pity) || 0) + 1;
+        Game.flags.tame_pity = pity;
+        const rate = Math.min(0.65, MONSTERS[sp].tame * (this.bait ? 3 : 1) + pity * 0.025);
+        // 最初の仲間は最大3回、その後も最大6回の対象戦闘で必ず出会える。
+        if ((!hasAnyMonster && pity >= 3) || pity >= 6 || Math.random() < rate) {
+          this.tameCandidate = sp;
+          Game.flags.tame_pity = 0;
+        }
       }
     }
   },
@@ -661,11 +767,11 @@ const Battle = {
           const member = Chars.makeMonster(sp, Math.max(1, Game.party[0].level), nick);
           if (Game.party.length < 4) {
             Game.party.push(member);
-            self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
+            self.push(`${m.name}は なかまに なった!`, () => { AudioSys.sfx('join'); Game.save(); });
             self.push(`${nick}という なまえを つけた! (レベル${member.level})`);
           } else {
             Game.reserve.push(member);
-            self.push(`${m.name}は なかまに なった!`, () => AudioSys.sfx('join'));
+            self.push(`${m.name}は なかまに なった!`, () => { AudioSys.sfx('join'); Game.save(); });
             self.push(`${nick}という なまえを つけた! (レベル${member.level})`);
             self.push(`${nick}は ひかえで まっている。`);
           }
@@ -758,11 +864,21 @@ const Battle = {
         g.globalAlpha = 1;
         g.globalCompositeOperation = 'source-over';
       }
-      if (e.sleep > 0) UI.text(g, 'zzz', cx - 12, y - 8, '#a8d8f8', 14);
+      // 敵の名前と残りHPを常時表示し、攻撃の成果と危険度を把握しやすくする。
+      const hpW = spec.boss ? 124 : 82;
+      const hpX = cx - hpW / 2 + sx;
+      const hpY = y - 14;
+      const hpRate = Math.max(0, e.hp / e.maxhp);
+      const hpCol = hpRate > .5 ? '#62dd82' : hpRate > .2 ? '#ffd45c' : '#ff6b65';
+      UI.text(g, e.name, cx - UI.measure(g, e.name, spec.boss ? 14 : 12) / 2 + sx, hpY - 6, '#f7f0dc', spec.boss ? 14 : 12);
+      g.fillStyle = 'rgba(2,6,12,.82)'; g.fillRect(hpX - 2, hpY - 2, hpW + 4, 9);
+      g.fillStyle = '#27313d'; g.fillRect(hpX, hpY, hpW, 5);
+      g.fillStyle = hpCol; g.fillRect(hpX, hpY, Math.ceil(hpW * hpRate), 5);
+      if (e.sleep > 0) UI.text(g, 'zzz', hpX + hpW + 5, hpY + 5, '#a8d8f8', 12);
+      else if (e.defendTurn) UI.text(g, 'まもり', hpX + hpW + 5, hpY + 5, '#ffe49a', 11);
       // ターゲットカーソル
       if (this.menu && this.menu.kind === 'targetE' && this.menu.sel === i) {
-        UI.cursor(g, cx - 8, y - 20, 'down');
-        UI.text(g, e.name, cx - UI.measure(g, e.name, 14) / 2, y - 34, '#fff', 14);
+        UI.cursor(g, cx - 8 + sx, hpY - 31, 'down');
       }
     }
 
@@ -804,9 +920,10 @@ const Battle = {
         }
         UI.cursor(g, 22, 270 + m.sel * 19, 'right');
       } else if (m.kind === 'targetA') {
-        UI.window(g, 8, 258, 200, 30 + Game.party.length * 19);
-        for (let i = 0; i < Game.party.length; i++) {
-          const p = Game.party[i];
+        const targets = m.list || Game.party;
+        UI.window(g, 8, 258, 200, 30 + targets.length * 19);
+        for (let i = 0; i < targets.length; i++) {
+          const p = targets[i];
           UI.text(g, `${p.name}  HP${p.hp}`, 40, 282 + i * 19, i === m.sel ? '#fff' : '#bbb', 15);
         }
         UI.cursor(g, 22, 270 + m.sel * 19, 'right');
@@ -845,6 +962,10 @@ const Battle = {
       const m = Game.party[i];
       const x = 8 + i * (w + 6);
       UI.window(g, x, 8, w, 74);
+      if (this.phase === 'command' && this.memberIdx === i) {
+        g.strokeStyle = '#ffe58a'; g.lineWidth = 2;
+        g.beginPath(); g.roundRect(x + 2, 10, w - 4, 70, 5); g.stroke();
+      }
       const col = m.hp <= 0 ? '#f66' : (m.hp < m.maxhp * 0.25 ? '#fc6' : '#fff');
       const partyAtlas = Game.partyBattleV5;
       const heroCell = m.kind === 'human' ? { hero: 0, rino: 1, gald: 2, fio: 3 }[m.id] : undefined;
@@ -859,8 +980,12 @@ const Battle = {
         if (icon) g.drawImage(icon, x + 8, 18, 30, 30);
       }
       UI.text(g, m.name, x + 40, 28, col, 13);
-      UI.text(g, `HP ${m.hp}`, x + 40, 48, col, 13);
-      UI.text(g, `MP ${m.mp}`, x + 40, 66, '#8cf', 13);
+      UI.text(g, `HP ${m.hp}/${m.maxhp}`, x + 40, 47, col, 11);
+      UI.text(g, `MP ${m.mp}/${m.maxmp}`, x + 40, 64, '#8cf', 11);
+      const hpRate = Math.max(0, m.hp / m.maxhp);
+      g.fillStyle = '#27313d'; g.fillRect(x + 8, 75, w - 16, 4);
+      g.fillStyle = hpRate > .5 ? '#62dd82' : hpRate > .2 ? '#ffd45c' : '#ff6b65';
+      g.fillRect(x + 8, 75, Math.ceil((w - 16) * hpRate), 4);
       if (m.sleep > 0) UI.text(g, 'ねむり', x + 66, 28, '#a8d8f8', 11);
       if (m.poison) UI.text(g, 'どく', x + 74, 28, '#c8f', 11);
     }

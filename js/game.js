@@ -45,6 +45,8 @@ const Input = (() => {
       held.add(k);
       AudioSys.ensureCtx();
     },
+    // スティック移動は押しっぱなしだけを伝え、メニューへ持ち越す単発入力を作らない。
+    virtualHold(k) { held.add(k); AudioSys.ensureCtx(); },
     virtualUp(k) { held.delete(k); },
   };
   window.addEventListener('DOMContentLoaded', () => {
@@ -73,7 +75,7 @@ const Input = (() => {
     let stickPointer = null, originX = 0, originY = 0, activeMoveKeys = new Set();
     const setMoveKeys = next => {
       for (const key of activeMoveKeys) if (!next.has(key)) api.virtualUp(key);
-      for (const key of next) if (!activeMoveKeys.has(key)) api.virtualDown(key);
+      for (const key of next) if (!activeMoveKeys.has(key)) api.virtualHold(key);
       activeMoveKeys = next;
     };
     const moveStick = e => {
@@ -84,10 +86,9 @@ const Input = (() => {
       knob.style.transform = `translate(${nx * travel}px, ${ny * travel}px)`;
       const next = new Set();
       if (distance >= 12) {
-        if (ny < -.38) next.add('up');
-        if (ny > .38) next.add('down');
-        if (nx < -.38) next.add('left');
-        if (nx > .38) next.add('right');
+        // グリッド移動なので、斜め入力は傾きの大きい軸へ素直に丸める。
+        if (Math.abs(nx) > Math.abs(ny)) next.add(nx < 0 ? 'left' : 'right');
+        else next.add(ny < 0 ? 'up' : 'down');
       }
       setMoveKeys(next);
     };
@@ -228,19 +229,21 @@ const Chars = {
   },
 
   changeJob(m, jobId) {
+    const formerLevel = m.level;
     // 能力の一部を「たくわえ」として引き継ぐ
     m.seeds.hp += Math.floor(m.maxhp * 0.05);
     m.seeds.mp += Math.floor(m.maxmp * 0.05);
     m.seeds.str += Math.floor((m.str - m.seeds.str) * 0.1);
     m.seeds.vit += Math.floor((m.vit - m.seeds.vit) * 0.1);
     m.job = jobId;
-    m.level = 1;
-    m.exp = 0;
+    // 第一部終盤でLv1へ戻ると復帰不能になりやすいため、鍛錬の7割を新しい道へ引き継ぐ。
+    m.level = Math.max(5, Math.floor(formerLevel * 0.7));
+    m.exp = Chars.expTable(m.level);
     Chars.recompute(m);
     m.hp = m.maxhp; m.mp = m.maxmp;
     const learned = [];
     for (const [lv, sp] of JOBS[jobId].spells) {
-      if (lv <= 1 && !m.spells.includes(sp)) { m.spells.push(sp); learned.push(sp); }
+      if (lv <= m.level && !m.spells.includes(sp)) { m.spells.push(sp); learned.push(sp); }
     }
     return learned;
   },
@@ -288,6 +291,14 @@ const Chars = {
   agiOf(m) { return m.agi; },
 };
 
+const REST_POINT_NAMES = Object.freeze({
+  7: 'ほしあかりの野営地',
+  18: 'みずかがみの浮島町 ミズベ',
+  27: 'ぬすびとの路地町 ネグラ',
+  37: 'ゆめつむぎの町 ネムリ',
+});
+const PUBLIC_REST_POINTS = Object.freeze([1, 7, 11, 18, 21, 27, 31, 37]);
+
 // ---------------- ゲーム本体 ----------------
 const Game = {
   state: 'boot',
@@ -304,6 +315,7 @@ const Game = {
   titleSel: 0, openingPage: 0, endingT: 0, shop: null,
   fallEvent: null,
   chapterClearT: 0,
+  maxRoster: 20,
 
   // ---------- 起動 ----------
   init() {
@@ -337,8 +349,10 @@ const Game = {
     this.fieldCharacters.hero = heroField;
     // 仲間は加入・登場フロアまで遅延読込する。
     for (const id of ['rino', 'gald', 'fio']) this.fieldCharacters[id] = new Image();
-    const villageNpcs = new Image();
-    this.fieldCharacters.villageNpcs = villageNpcs;
+    this.npcDirectionSheets = {};
+    for (const id of ['elder', 'woman', 'man', 'child', 'merchant', 'guard', 'celest']) {
+      this.npcDirectionSheets[id] = new Image();
+    }
     this.canvas = document.getElementById('screen');
     // 内部解像度 1024x896 (論理座標系は512x448のまま、2倍変換で描画)
     this.canvas.width = 1024; this.canvas.height = 896;
@@ -359,6 +373,7 @@ const Game = {
     window.addEventListener('orientationchange', () => setTimeout(resize, 80));
     resize();
     this.state = 'title';
+    this.titleSel = this.hasSave() ? 1 : 0;
     this.last = performance.now();
     window.addEventListener('arca:visual-test', ev => this.runVisualTest(ev.detail));
     const visualTest = new URLSearchParams(location.search).get('visualTest');
@@ -375,6 +390,7 @@ const Game = {
   runVisualTest(detail) {
     const test = typeof detail === 'string' ? detail : detail && detail.kind;
     if (!test) return false;
+    this.visualTestActive = true;
     if (!this.party.length) {
       this.party = [Chars.makeHuman('hero', 1)];
       this.party[0].weapon = 'stick'; this.party[0].armor = 'cloth';
@@ -543,6 +559,27 @@ const Game = {
       this.px = nearby.x; this.py = nearby.y; this.dir = nearby.dir;
       this.resetPartyPath(); this.state = 'field'; return true;
     }
+    const specialFloors = {
+      'lake-town-18': 18,
+      'rescue-24': 24,
+      'thief-town-27': 27,
+      'false-home-34': 34,
+      'dream-town-37': 37,
+    };
+    if (specialFloors[test]) {
+      const floor = specialFloors[test];
+      this.party = [Chars.makeHuman('hero', Math.max(8, Math.floor(floor / 2))), Chars.makeMonster('slime', Math.max(7, Math.floor(floor / 2)), 'プルた')];
+      if (floor === 24) this.flags.rescued_merchant_24 = false;
+      if (floor === 27) this.flags.rescued_merchant_24 = true;
+      this.loadFloor(floor, null);
+      const focus = this.map.npcs[0] || this.map.restSpawn || this.map.entry;
+      const nearby = [
+        { x: focus.x, y: focus.y + 1, dir: 'u' }, { x: focus.x, y: focus.y - 1, dir: 'd' },
+        { x: focus.x + 1, y: focus.y, dir: 'l' }, { x: focus.x - 1, y: focus.y, dir: 'r' },
+      ].find(p => Maps.walkable(this.map, p.x, p.y)) || this.map.entry;
+      this.px = nearby.x; this.py = nearby.y; this.dir = nearby.dir || 'd';
+      this.resetPartyPath(); this.state = 'field'; return true;
+    }
     if (test === 'dungeon-tier1') {
       this.loadFloor(2, null); this.state = 'field'; return true;
     }
@@ -592,6 +629,8 @@ const Game = {
   },
 
   save() {
+    // 開発用の画面テストは、実プレイヤーの冒険の書を上書きしない。
+    if (this.visualTestActive) return true;
     const data = {
       v: 1, gold: this.gold, floor: this.floor, px: this.px, py: this.py, dir: this.dir,
       party: this.party, reserve: this.reserve, bag: this.bag, equipBag: this.equipBag,
@@ -606,11 +645,19 @@ const Game = {
       const d = JSON.parse(localStorage.getItem('arca_tower_save_v1'));
       if (!d) return false;
       const wasBeyondPublicRelease = d.floor > 40;
+      let migratedSave = wasBeyondPublicRelease;
       const savedPosition = { x: d.px, y: d.py, dir: d.dir };
+      const publicFloor = Math.max(1, Math.min(Number(d.floor) || 1, 40));
+      const visited = new Set((d.visitedTowns || [1])
+        .map(Number).filter(f => PUBLIC_REST_POINTS.includes(f) && f <= publicFloor));
+      // 旧版で通過済みの途中拠点も、新しいワープ先として安全に引き継ぐ。
+      for (const f of PUBLIC_REST_POINTS) if (f <= publicFloor) visited.add(f);
+      const savedInn = Math.min(Number(d.lastInn) || 1, publicFloor);
+      const normalizedInn = [...PUBLIC_REST_POINTS].filter(f => f <= savedInn).pop() || 1;
       Object.assign(this, {
-        gold: d.gold, floor: Math.min(d.floor, 40), px: d.px, py: d.py, dir: d.dir,
-        party: d.party, reserve: d.reserve, bag: d.bag, equipBag: d.equipBag,
-        flags: d.flags || {}, visitedTowns: d.visitedTowns, lastInn: Math.min(d.lastInn, 40),
+        gold: d.gold, floor: publicFloor, px: d.px, py: d.py, dir: d.dir,
+        party: d.party || [], reserve: d.reserve || [], bag: d.bag || [], equipBag: d.equipBag || [],
+        flags: d.flags || {}, visitedTowns: [...visited].sort((a, b) => a - b), lastInn: normalizedInn,
       });
       for (const m of [...this.party, ...this.reserve]) {
         m.sleep = 0; m.defend = false; m.atkBuff = 1; m.defBuff = 1;
@@ -624,13 +671,23 @@ const Game = {
           m.mp = Math.round(m.maxmp * Math.min(1, mpRate));
         }
       }
+      // 後から追加されたボス報酬を、撃破済みの旧セーブにも一度だけ補填する。
+      for (const floor of [10, 20, 30, 40]) {
+        const be = BOSS_EVENTS[floor];
+        if (be && this.flags[be.flag] && !this.flags[`reward_${be.flag}`]) {
+          this.grantBossReward(be);
+          if (this.flags[`reward_${be.flag}`]) migratedSave = true;
+        }
+      }
       this.loadFloor(this.floor, null);
-      if (!wasBeyondPublicRelease) {
+      if (!wasBeyondPublicRelease && Maps.walkable(this.map, savedPosition.x, savedPosition.y)) {
         this.px = savedPosition.x; this.py = savedPosition.y; this.dir = savedPosition.dir;
       }
       this.resetPartyPath();
       this.state = 'field';
       this.playFieldMusic();
+      // 40Fへの巻き戻しや旧ボス報酬の補填を即時保存し、再読込で重複させない。
+      if (migratedSave) this.save();
       if (wasBeyondPublicRelease) {
         this.showDialog([
           'この こうかいばんは 40かいまで たのしめます。',
@@ -665,7 +722,6 @@ const Game = {
       const townArt = this.townArtsV5[this.floor];
       if (townArt) this.loadAssetOnce(townArt, `assets/v5/town-${this.floor}-v5.webp`);
       else this.loadAssetOnce(this.villageArt, 'assets/village-bg-v4.png');
-      this.loadAssetOnce(this.fieldCharacters.villageNpcs, 'assets/v5/village-npcs-v5.webp');
     } else if (this.map.tier === 1) {
       this.loadAssetOnce(this.tier1Environment, 'assets/v5/tier1-environment-v5.webp');
     } else if (this.map.tier === 2) {
@@ -689,11 +745,11 @@ const Game = {
     this.ox = 0; this.oy = 0; this.moving = false;
     this.resetPartyPath();
     this.ensurePartyFieldAssets();
-    if (this.map.npcs.some(n => ['elder', 'woman', 'man', 'child', 'merchant', 'guard'].includes(n.spr))) {
-      this.loadAssetOnce(this.fieldCharacters.villageNpcs, 'assets/v5/village-npcs-v5.webp');
+    for (const id of new Set(this.map.npcs.map(n => n.spr))) {
+      if (this.npcDirectionSheets[id]) this.loadAssetOnce(this.npcDirectionSheets[id], `assets/v6/npc-${id}-directions-v6.webp`);
     }
     for (const n of this.map.npcs) if (this.fieldCharacters[n.spr]) this.loadFieldCharacter(n.spr);
-    if (this.map.town) {
+    if (this.map.town || this.map.settlement) {
       this.map.npcs.forEach((n, i) => {
         if (!n.wander) return;
         n.homeX = n.x; n.homeY = n.y;
@@ -703,7 +759,7 @@ const Game = {
       });
     }
     this.floorLabelT = 3;
-    if (this.map.town) {
+    if (this.map.town || this.map.restPoint) {
       if (!this.visitedTowns.includes(floor)) this.visitedTowns.push(floor);
       this.lastInn = floor;
       this.encounterDistance = 0;
@@ -737,7 +793,8 @@ const Game = {
   },
 
   playFieldMusic() {
-    if (this.map.town) AudioSys.playMusic('town');
+    if (this.map.music) AudioSys.playMusic(this.map.music);
+    else if (this.map.town || this.map.settlement) AudioSys.playMusic('town');
     else if (this.floor === 16) AudioSys.playMusic('mystery');
     else if (this.floor === 100) AudioSys.playMusic('mystery');
     else if (this.map.tier <= 3) AudioSys.playMusic('field1');
@@ -761,6 +818,7 @@ const Game = {
     this.fadeTo(() => {
       this.loadFloor(target, delta > 0 ? 'up' : 'down');
       this.playFieldMusic();
+      if (this.map.town || this.map.restPoint) this.save();
     });
   },
 
@@ -814,8 +872,11 @@ const Game = {
     }
     if (Input.pressed('ok')) {
       AudioSys.sfx('ok');
-      if (opts === 1 || this.titleSel === 0) this.newGame();
-      else if (!this.load()) this.newGame();
+      if (opts === 1) this.newGame();
+      else if (this.titleSel === 0) {
+        this.ask('いまの ぼうけんのしょは、つぎの きろくで うわがきされます。\nあたらしく はじめますか?',
+          () => this.newGame(), () => { this.state = 'title'; this.titleSel = 1; });
+      } else if (!this.load()) this.newGame();
     }
   },
 
@@ -829,8 +890,8 @@ const Game = {
         this.playFieldMusic();
         this.showDialog([
           'むらおさ「ソラよ。ゆけ。」',
-          '「100かいの てんがいの まで――」',
-          '「この せかいの しんじつを たしかめるのじゃ。」',
+          '「まずは 40かいの あけぼのの門まで――」',
+          '「よっつの まもりを こえ、とうに あさを とりもどすのじゃ。」',
           '(むらの みんなに はなしを きいてから でかけよう。きたの かいだんから うえへ いける。)',
         ]);
       }
@@ -878,7 +939,7 @@ const Game = {
   },
 
   updateTownNpcs(dt) {
-    if (!this.map || !this.map.town) return;
+    if (!this.map || (!this.map.town && !this.map.settlement)) return;
     const occupiedByParty = (x, y) => {
       if (x === this.px && y === this.py) return true;
       return (this.partyPath || []).slice(1, 4).some(p => p.x === x && p.y === y);
@@ -1051,10 +1112,13 @@ const Game = {
       this.gold = Math.floor(this.gold / 2);
       for (const m of this.party) { m.hp = m.maxhp; m.mp = m.maxmp; m.poison = false; }
       this.loadFloor(this.lastInn, null);
-      this.px = 10; this.py = 12;
+      const wake = this.map.restSpawn || this.map.entry;
+      this.px = wake.x; this.py = wake.y; this.dir = 'u';
+      this.ignoreStairs = null;
       this.resetPartyPath();
       this.state = 'field';
       this.playFieldMusic();
+      this.save();
       this.showDialog(['……めが さめた。', 'やどばの ひとが かいほうして くれたようだ。', '(しょじきんが はんぶんに なってしまった)']);
     }
   },
@@ -1066,7 +1130,13 @@ const Game = {
     const T = Art.T;
 
     // NPC
-    const npc = this.map.npcs.find(n => n.x === fx && n.y === fy);
+    let npc = this.map.npcs.find(n => n.x === fx && n.y === fy);
+    // 歩き始めた直後の町人は、見た目がまだ出発マスに近い。
+    // その出発マスへ話しかけた場合も反応させ、会話位置へ自然に戻す。
+    if (!npc) {
+      npc = this.map.npcs.find(n => n.npcMoving && n.npcFromX === fx && n.npcFromY === fy);
+      if (npc) { npc.x = npc.npcFromX; npc.y = npc.npcFromY; }
+    }
     if (npc) {
       npc.npcMoving = false; npc.npcMoveT = 1; npc.npcWait = 1.8;
       npc.dir = { u: 'd', d: 'u', l: 'r', r: 'l' }[this.dir] || npc.dir;
@@ -1205,6 +1275,11 @@ const Game = {
     if (npc.event === 'shop_equip') { this.openShop('equip'); return; }
     if (npc.event === 'camp_rest') { this.campRestEvent(); return; }
     if (npc.event === 'camp_story') { this.campStoryEvent(); return; }
+    if (npc.event === 'lake_story_18') { this.lakeStoryEvent(); return; }
+    if (npc.event === 'rescue_merchant_24') { this.merchantRescueEvent(); return; }
+    if (npc.event === 'thief_story_27') { this.thiefStoryEvent(); return; }
+    if (npc.event === 'false_home_34') { this.falseHomeEvent(); return; }
+    if (npc.event === 'dream_story_37') { this.dreamStoryEvent(); return; }
     if (npc.event === 'jobchange') { this.openJobChange(); return; }
     if (npc.event && npc.event.startsWith('join_')) { this.joinEvent(npc.event); return; }
     if (npc.lines) this.showDialog(npc.lines, null, npc.spr);
@@ -1224,6 +1299,7 @@ const Game = {
           this.encounterDistance = this.rollEncounterDistance(false);
           this.flags.camp_7_rested = true;
           AudioSys.sfx('heal');
+          this.save();
           this.showDialog(['パチパチと まきの はぜる おとがする……。', '(みんなの HPとMPが かいふくした!)']);
         });
       }, () => this.showDialog(['ばんにん「むりは するなよ。ひは いつでも あいている。」']));
@@ -1245,6 +1321,141 @@ const Game = {
       lines.push('(ガーディオは ただの てきではないようだ。)');
     }
     this.showDialog(lines);
+  },
+
+  lakeStoryEvent() {
+    const first = !this.flags.story_lake_town_18;
+    const lines = first ? [
+      'みずべの長「ここは ミズベ。とうの なかの うみに、いかだを つないで できた町じゃ。」',
+      '「町は もともと 11かいに あった。だが みずが みちを のみ、ここまで ながされてきた。」',
+      '「20かいの アクエラは、あふれる きおくを ひとりで せきとめておる。」',
+      '「たおすだけでは みずは しずまぬ。なぜ ないているのか、その こえを きいておくれ。」',
+    ] : [
+      'みずべの長「みずは ものを うつす。だが、うつった ものが すべて ほんものとは かぎらん。」',
+      '「34かいで ふるさとを みても、すぐに てを のばしては ならぬぞ。」',
+    ];
+    const waterAlly = this.party.find(m => m.kind === 'monster' && ['aquan', 'slimeblue'].includes(m.id));
+    if (waterAlly) lines.push(`${waterAlly.name}は みずべの長の ことばに あわせ、しずかに からだを ゆらした。`);
+    if (first) {
+      this.flags.story_lake_town_18 = true;
+      this.addItem('kaerihane', 1);
+      this.save();
+      AudioSys.sfx('chest');
+      lines.push('みずべの長「かえりのはねを もってゆけ。かえる ばしょを わすれぬためにな。」');
+      lines.push('(「かえりのはね」を てにいれた!)');
+    }
+    this.showDialog(lines, null, 'elder');
+  },
+
+  merchantRescueEvent() {
+    if (this.flags.rescued_merchant_24) {
+      this.showDialog(['しょうにんを とらえていた おりは、からっぽになっている。']);
+      return;
+    }
+    const lines = [
+      'しょうにん「た、たすかった! ぬすびとに さらわれたと おもったら、まものの しわざだったんだ。」',
+      '「にもつを おとりに して ここまで にげたけど、この おりに とじこめられて……。」',
+      '「27かいの ネグラへ いく。あそこなら けがにんも まものも、おなじ たきびで やすめるからな。」',
+    ];
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (monster) lines.push(`しょうにん「${monster.name}も いっしょか。よし、ほしにくは おおめに しいれておくよ。」`);
+    this.showDialog(lines, () => {
+      this.flags.rescued_merchant_24 = true;
+      this.gold += 150;
+      this.addItem('hoshiniku', 1);
+      if (this.map.rescueSite) this.map.rescueSite.rescued = true;
+      this.map.npcs = this.map.npcs.filter(n => n.event !== 'rescue_merchant_24');
+      this.save();
+      AudioSys.sfx('chest');
+      this.showDialog([
+        'しょうにん「これは おれいだ。27かいで また あおう!」',
+        '(150ゴールドと「ほしにく」を てにいれた!)',
+        '(27かいの ネグラに どうぐやが ひらかれるようになった。)',
+      ], null, 'merchant');
+    }, 'merchant');
+  },
+
+  thiefStoryEvent() {
+    const first = !this.flags.story_thief_town_27;
+    const lines = first ? [
+      'ネグラの頭「ここじゃ うまれも しごとも きかない。だれと たきびを かこめるか、それだけだ。」',
+      '「ドロンゾも むかしは ここの なかまだった。とうに すてられた ものを ひろい、町へ くばっていた。」',
+      '「だが 30かいで、塔の『砂の試練』に のみこまれた。うばうものと まもるものの くべつを なくしたんだ。」',
+      '「もし あいつが まだ なまえを おぼえていたら、ドロンゾと よんでやってくれ。」',
+    ] : [
+      'ネグラの頭「ぬすむことより、なにを のこすかの ほうが むずかしい。」',
+      '「おまえは 40かいまでに、なにを のこす?」',
+    ];
+    if (this.flags.rescued_merchant_24) lines.push('ネグラの頭「しょうにんを つれてかえってくれたな。町の みんなが たすかった。」');
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (monster) lines.push(`ネグラの頭「${monster.name}、おまえにも ここで つかう なまえが ある。りっぱな 町の なかまだ。」`);
+    if (first) {
+      this.flags.story_thief_town_27 = true;
+      this.addItem('chikaratane', 1);
+      this.save();
+      AudioSys.sfx('chest');
+      lines.push('ネグラの頭「これは 町の たからだ。ドロンゾに あうまで あずける。」');
+      lines.push('(「ちからのたね」を てにいれた!)');
+    }
+    this.showDialog(lines, null, 'guard');
+  },
+
+  falseHomeEvent() {
+    const first = !this.flags.story_false_home_34;
+    const lines = first ? [
+      'むらおさ「ソラよ。よく もどった。もう とうへ いかなくてよい。」',
+      '「ガーディオも アクエラも ドロンゾも、さいしょから いなかったのじゃ。」',
+      '「なかまも ぼうけんも わすれ、ここで いつもの あさを くりかえそう。」',
+      'ソラ「……ちがう。ぼくの村の あさは、こんなに しずかじゃない。」',
+      'ソラ「だれかが パンを こがして、こどもが はしって、まものだって いびきを かく。」',
+    ] : [
+      'むらおさの すがたを した きおくが たっている。',
+      'もう「かえってこい」とは いわない。ただ、ソラたちの あしおとを きいている。',
+    ];
+    if (this.party.some(m => m.kind === 'human' && m.id === 'rino')) lines.push('リノ「きれいすぎる おもいでは、だれかが けずった おもいでよ。わたしたちは すすもう。」');
+    const monster = this.party.find(m => m.kind === 'monster');
+    if (monster) lines.push(`${monster.name}が ひとこえ なくと、にせものの いえに ひびが はいった。`);
+    if (first) {
+      this.flags.story_false_home_34 = true;
+      this.map.falseHomeAwake = true;
+      this.addItem('fushigimi', 1);
+      this.save();
+      AudioSys.sfx('spell');
+      lines.push('にせものの あさが くだけ、なかから ひとつの きのみが ころがりでた。');
+      lines.push('(「ふしぎのきのみ」を てにいれた!)');
+      lines.push('(ほんとうの ふるさとは、きれいな けしきではなく だれかと すごした じかんの なかにある。)');
+    }
+    this.showDialog(lines, null, 'elder');
+  },
+
+  dreamStoryEvent() {
+    const first = !this.flags.story_dream_town_37;
+    const lines = first ? [
+      'ゆめもり「ここは ネムリ。40かいへ いくものが、いちどだけ ほんねを おいていく町。」',
+      '「よわい こころを すてるのではない。こわいと いえる こころを つれていくのです。」',
+      'ソラ「ぼくは こわい。40かいで まけることより、みんなを かえせなくなることが。」',
+    ] : [
+      'ゆめもり「こわさを ことばに できたなら、もう それだけに しはいされることは ありません。」',
+      '「あさは すぐ そこです。」',
+    ];
+    for (const member of this.party.slice(1)) {
+      if (member.kind === 'human' && member.id === 'rino') lines.push('リノ「わたしは、しんじた ひとが また いなくなるのが こわい。だから こんどは となりを あるく。」');
+      else if (member.kind === 'human' && member.id === 'gald') lines.push('ガルド「おれは まもれないことが こわい。だから まもるだけじゃなく、たよることも おぼえる。」');
+      else if (member.kind === 'human' && member.id === 'fio') lines.push('フィオ「わたしは ほんとうを しるのが こわい。でも、しらないまま だれかを きずつけるほうが こわい。」');
+      else if (member.kind === 'monster') lines.push(`${member.name}は ソラの てに からだを よせた。ことばの かわりに、あたたかさを のこした。`);
+    }
+    if (first) {
+      this.flags.story_dream_town_37 = true;
+      for (const m of [...this.party, ...this.reserve]) {
+        m.hp = m.maxhp; m.mp = m.maxmp; m.poison = false; m.sleep = 0;
+      }
+      this.addItem('inochimi', 1);
+      this.save();
+      AudioSys.sfx('heal');
+      lines.push('ゆめもり「では、みなさんの あしたを おかえしします。」');
+      lines.push('(みんなの HPとMPが かいふくし、「いのちのきのみ」を てにいれた!)');
+    }
+    this.showDialog(lines, null, 'elder');
   },
 
   // ---------- 転職 ----------
@@ -1284,7 +1495,8 @@ const Game = {
       return;
     }
     // 職業選択
-    const jobs = JOB_ORDER;
+    // 50F以降で開く「けんじゃ」は、40F完結版の選択肢には表示しない。
+    const jobs = JOB_ORDER.filter(key => key !== 'sage');
     if (Input.pressed('up')) { ui.sel = (ui.sel + jobs.length - 1) % jobs.length; AudioSys.sfx('cursor'); }
     if (Input.pressed('down')) { ui.sel = (ui.sel + 1) % jobs.length; AudioSys.sfx('cursor'); }
     if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); ui.step = 'member'; ui.sel = 0; return; }
@@ -1303,11 +1515,12 @@ const Game = {
         return;
       }
       AudioSys.sfx('ok');
-      this.ask(`${mem.name}を ${job.name}に てんしょくさせる。\nレベルは 1に もどる(じゅもんと ちからの いちぶは のこる)。よいですか?`, () => {
+      const nextLevel = Math.max(5, Math.floor(mem.level * 0.7));
+      this.ask(`${mem.name}を ${job.name}に てんしょくさせる。\nレベルは ${nextLevel}に なる(じゅもんと ちからの いちぶは のこる)。よいですか?`, () => {
         const learned = Chars.changeJob(mem, key);
         AudioSys.sfx('levelup');
         const lines = [`${mem.name}は ${job.name}に なった!`,
-          '(レベルは 1に もどったが、きたえた ちからの いちぶは たくわえとして のこっている)'];
+          `(レベルは ${mem.level}になり、きたえた ちからの いちぶも たくわえとして のこっている)`];
         for (const s of learned) lines.push(`${mem.name}は ${SPELLS[s].name}を おもいだした!`);
         this.showDialog(lines);
       }, () => {
@@ -1330,7 +1543,7 @@ const Game = {
       UI.cursor(g, 24, 50 + ui.sel * 44, 'right');
       return;
     }
-    const jobs = JOB_ORDER;
+    const jobs = JOB_ORDER.filter(key => key !== 'sage');
     UI.window(g, 8, 8, 300, 44 + jobs.length * 26);
     UI.text(g, `${ui.member.name}の あたらしい みち`, 24, 34, '#ffd', 14);
     for (let i = 0; i < jobs.length; i++) {
@@ -1362,7 +1575,7 @@ const Game = {
   },
 
   innEvent() {
-    const shop = SHOPS[this.floor] || { inn: 10 };
+    const shop = SHOPS[this.floor] || SHOPS[this.map.shopFloor] || { inn: 10 };
     const price = shop.inn;
     this.ask(`やどや「いらっしゃい! ひとばん ${price}ゴールドだよ。とまっていくかい?」`, () => {
       if (this.gold < price) { this.showDialog(['やどや「おや おかねが たりないよ。」']); return; }
@@ -1371,6 +1584,7 @@ const Game = {
       this.fadeTo(() => {
         for (const m of [...this.party, ...this.reserve]) { m.hp = m.maxhp; m.mp = m.maxmp; m.poison = false; }
         AudioSys.sfx('heal');
+        this.save();
       });
       setTimeout(() => {
         this.playFieldMusic();
@@ -1397,7 +1611,9 @@ const Game = {
         this.reserve.push(member);
         this.showDialog([je.joined, `${member.name}は ひかえで まっている。`]);
       }
-      this.map = Maps.build(this.floor, this.flags); // NPC消去
+      // マップを丸ごと再生成せず加入NPCだけ消し、町人の徘徊原点を保持する。
+      this.map.npcs = this.map.npcs.filter(n => n.event !== ev);
+      this.save();
     });
   },
 
@@ -1415,6 +1631,7 @@ const Game = {
           this.flags[be.flag] = true;
           this.grantBossReward(be);
           this.state = 'field';
+          this.save();
           if (floor === 100) { this.finale(); return; }
           AudioSys.playMusic('town');
           this.showDialog(be.after, () => {
@@ -1594,7 +1811,10 @@ const Game = {
           AudioSys.sfx('ok');
           const mem = list[m.sel];
           if (m.next === 'status') this.menuStack.push({ kind: 'status', member: mem });
-          else if (m.next === 'spell') this.menuStack.push({ kind: 'spells', member: mem, sel: 0 });
+          else if (m.next === 'spell') {
+            if (mem.hp <= 0) { AudioSys.sfx('cancel'); break; }
+            this.menuStack.push({ kind: 'spells', member: mem, sel: 0 });
+          }
           else if (m.next === 'equip') this.menuStack.push({ kind: 'equipSlot', member: mem, sel: 0 });
         }
         break;
@@ -1613,31 +1833,49 @@ const Game = {
         else if (Input.pressed('ok')) {
           const spId = fieldSpells[m.sel];
           const sp = SPELLS[spId];
-          if (m.member.mp < sp.mp) { AudioSys.sfx('cancel'); break; }
+          if (m.member.hp <= 0 || m.member.mp < sp.mp) { AudioSys.sfx('cancel'); break; }
           AudioSys.sfx('ok');
           if (spId === 'toberu') {
             this.menuStack.push({ kind: 'warp', sel: 0, cost: () => { m.member.mp -= sp.mp; } });
           } else if (sp.kind === 'heal') {
-            this.menuStack.push({ kind: 'pickTarget', sel: 0, onPick: t => {
-              if (t.hp <= 0) { AudioSys.sfx('cancel'); return; }
+            const targets = this.party.filter(t => t.hp > 0 && t.hp < t.maxhp);
+            if (!targets.length) { AudioSys.sfx('cancel'); break; }
+            if (sp.target === 'party') {
+              m.member.mp -= sp.mp;
+              for (const t of targets) {
+                const v = Math.min(t.maxhp - t.hp, sp.pow[0] + Math.floor(Math.random() * (sp.pow[1] - sp.pow[0] + 1)));
+                t.hp += v;
+              }
+              AudioSys.sfx('heal');
+            } else this.menuStack.push({ kind: 'pickTarget', targets, sel: 0, onPick: t => {
+              // 対象画面を開いている間にも状態は変わり得るため、確定時にもう一度検査する。
+              if (m.member.hp <= 0 || m.member.mp < sp.mp || t.hp <= 0 || t.hp >= t.maxhp) {
+                AudioSys.sfx('cancel'); this.menuStack.pop(); return;
+              }
               m.member.mp -= sp.mp;
               const v = Math.min(t.maxhp - t.hp, sp.pow[0] + Math.floor(Math.random() * (sp.pow[1] - sp.pow[0] + 1)));
               t.hp += v; AudioSys.sfx('heal');
+              this.menuStack.pop();
             } });
           } else if (sp.kind === 'revive') {
-            this.menuStack.push({ kind: 'pickTarget', sel: 0, onPick: t => {
-              if (t.hp > 0) { AudioSys.sfx('cancel'); return; }
+            const targets = this.party.filter(t => t.hp <= 0);
+            if (!targets.length) { AudioSys.sfx('cancel'); break; }
+            this.menuStack.push({ kind: 'pickTarget', targets, sel: 0, onPick: t => {
+              if (m.member.hp <= 0 || m.member.mp < sp.mp || t.hp > 0) {
+                AudioSys.sfx('cancel'); this.menuStack.pop(); return;
+              }
               m.member.mp -= sp.mp;
               t.hp = Math.floor(t.maxhp / 2); AudioSys.sfx('heal');
+              this.menuStack.pop();
             } });
           }
         }
         break;
       }
       case 'pickTarget':
-        move(this.party.length);
+        move((m.targets || this.party).length);
         if (Input.pressed('cancel')) back();
-        else if (Input.pressed('ok')) { m.onPick(this.party[m.sel]); }
+        else if (Input.pressed('ok')) { m.onPick((m.targets || this.party)[m.sel]); }
         break;
       case 'items': {
         if (!this.bag.length) {
@@ -1651,10 +1889,16 @@ const Game = {
           const item = ITEMS[it.id];
           AudioSys.sfx('ok');
           if (['heal', 'mp', 'cure_poison', 'seed_str', 'seed_vit', 'seed_hp', 'seed_mp'].includes(item.kind)) {
-            this.menuStack.push({ kind: 'pickTarget', sel: 0, onPick: t => {
-              this.useItemOn(it.id, t);
-              this.menuStack.pop();
-              if (m.sel >= this.bag.length) m.sel = Math.max(0, this.bag.length - 1);
+            let targets = this.party;
+            if (item.kind === 'heal') targets = this.party.filter(t => t.hp > 0 && t.hp < t.maxhp);
+            else if (item.kind === 'mp') targets = this.party.filter(t => t.hp > 0 && t.mp < t.maxmp);
+            else if (item.kind === 'cure_poison') targets = this.party.filter(t => t.hp > 0 && t.poison);
+            if (!targets.length) { AudioSys.sfx('cancel'); break; }
+            this.menuStack.push({ kind: 'pickTarget', targets, sel: 0, onPick: t => {
+              if (this.useItemOn(it.id, t)) {
+                this.menuStack.pop();
+                if (m.sel >= this.bag.length) m.sel = Math.max(0, this.bag.length - 1);
+              }
             } });
           } else if (item.kind === 'field_warp') {
             this.removeItem(it.id);
@@ -1763,6 +2007,8 @@ const Game = {
     }
     this.party = newParty;
     this.reserve = newReserve;
+    this.ensurePartyFieldAssets();
+    this.resetPartyPath();
     this.partyMsg = null;
   },
 
@@ -1770,33 +2016,45 @@ const Game = {
     const item = ITEMS[id];
     const roll = p => p[0] + Math.floor(Math.random() * (p[1] - p[0] + 1));
     if (item.kind === 'heal') {
-      if (t.hp <= 0) { AudioSys.sfx('cancel'); return; }
+      if (t.hp <= 0 || t.hp >= t.maxhp) { AudioSys.sfx('cancel'); return false; }
       t.hp = Math.min(t.maxhp, t.hp + roll(item.pow));
       AudioSys.sfx('heal');
     } else if (item.kind === 'mp') {
+      if (t.hp <= 0 || t.mp >= t.maxmp) { AudioSys.sfx('cancel'); return false; }
       t.mp = Math.min(t.maxmp, t.mp + roll(item.pow));
       AudioSys.sfx('heal');
     } else if (item.kind === 'cure_poison') {
+      if (t.hp <= 0 || !t.poison) { AudioSys.sfx('cancel'); return false; }
       t.poison = false; AudioSys.sfx('heal');
     } else if (item.kind === 'seed_str') { t.seeds.str += 2 + Math.floor(Math.random() * 2); Chars.recompute(t); AudioSys.sfx('levelup'); }
     else if (item.kind === 'seed_vit') { t.seeds.vit += 2 + Math.floor(Math.random() * 2); Chars.recompute(t); AudioSys.sfx('levelup'); }
     else if (item.kind === 'seed_hp') { t.seeds.hp += 4 + Math.floor(Math.random() * 3); Chars.recompute(t); AudioSys.sfx('levelup'); }
     else if (item.kind === 'seed_mp') { t.seeds.mp += 4 + Math.floor(Math.random() * 3); Chars.recompute(t); AudioSys.sfx('levelup'); }
     this.removeItem(id);
+    return true;
   },
 
   warpTo(floor) {
+    if (!PUBLIC_REST_POINTS.includes(floor) || floor > 40 || !this.visitedTowns.includes(floor)) {
+      AudioSys.sfx('cancel');
+      this.showDialog(['その ばしょへの みちは、いまは とざされている。']);
+      return;
+    }
     AudioSys.sfx('spell');
     this.fadeTo(() => {
       this.loadFloor(floor, null);
-      this.px = 10; this.py = 12;
+      const arrival = this.map.restSpawn || this.map.entry;
+      this.px = arrival.x; this.py = arrival.y; this.dir = 'u';
+      this.ignoreStairs = null;
+      this.resetPartyPath();
       this.playFieldMusic();
+      this.save();
     });
   },
 
   // ---------- ショップ ----------
   openShop(type) {
-    const def = SHOPS[this.floor];
+    const def = SHOPS[this.floor] || SHOPS[this.map.shopFloor];
     if (!def) { this.showDialog(['「いまは しなぎれ なんだ。すまないね。」']); return; }
     this.state = 'shop';
     // しょうにんが なかまに いると 1わり やすい
@@ -2004,7 +2262,7 @@ const Game = {
     g.fillText('アルカの塔', 31, 98);
     g.font = `16px ${UI.FONT}`;
     g.fillStyle = '#d9eef1';
-    g.fillText('— 百層の物語 —', 58, 128);
+    g.fillText('— 第一部・あけぼのの門 —', 42, 128);
 
     // メニュー
     const opts = this.hasSave() ? ['はじめから', 'つづきから'] : ['はじめから'];
@@ -2136,6 +2394,7 @@ const Game = {
 
     // NPC・隊列・プレイヤーを足元Yで並べ、前後関係を自然にする。
     this.drawPitfalls(g, map, camX, camY);
+    this.drawSpecialFloorDetails(g, map, camX, camY);
     this.drawCampfires(g, map, camX, camY);
     this.drawChapterGate(g, map, camX, camY);
     this.drawWorldAnchor(g, map, camX, camY);
@@ -2153,9 +2412,16 @@ const Game = {
     const pathTo = this.partyPath || [];
     const pathFrom = this.partyPathFrom || pathTo;
     const progress = this.moving ? this.moveT : 1;
+    // 階段・ワープ直後は全員の経路が先頭と同じマスから始まる。
+    // その数フレームだけ全員を重ねて描くと一体化して見えるため、
+    // 実際に隊列の間隔ができるまでは同じマスの後続を隠す。
+    const claimedPathTiles = new Set([`${this.px},${this.py}`]);
     followers.forEach((member, i) => {
       const to = pathTo[i + 1] || pathTo[pathTo.length - 1] || { x: this.px, y: this.py, dir: this.dir };
       const from = pathFrom[i + 1] || to;
+      const pathKey = `${to.x},${to.y}`;
+      if (claimedPathTiles.has(pathKey)) return;
+      claimedPathTiles.add(pathKey);
       const wx = (from.x + (to.x - from.x) * progress) * TS;
       const wy = (from.y + (to.y - from.y) * progress) * TS;
       actors.push({ kind: 'follower', member, x: wx, y: wy, dir: to.dir || this.dir, sortY: wy + 31 });
@@ -2169,10 +2435,11 @@ const Game = {
     }
 
     // 木の梢や屋根を人物より後に再描画し、一枚絵でも遮蔽を成立させる。
-    if (hasVillagePainting && this.floor === 1) this.drawVillageForeground(g, camX, camY);
+    if (hasVillagePainting) this.drawTownForeground(g, townPainting, camX, camY);
 
     this.drawRegionAtmosphere(g, map.tier);
     this.drawSkySeaAtmosphere(g, map);
+    this.drawSpecialFloorAtmosphere(g, map);
 
     // 画面の縁だけを落として中央の冒険領域へ視線を集める。
     const vignette = g.createRadialGradient(256, 218, 155, 256, 218, 345);
@@ -2181,7 +2448,7 @@ const Game = {
     g.fillStyle = vignette; g.fillRect(0, 0, 512, 448);
 
     // フロア表示
-    if (this.floorLabelT > 0 || map.town) {
+    if (this.floorLabelT > 0 || map.town || map.settlement) {
       const label = map.name ? `${this.floor}F ${map.name}` : `${this.floor}F ${TIER_NAMES[map.tier] || ''}`;
       g.fillStyle = 'rgba(0,0,0,0.6)';
       const w = UI.measure(g, label, 14) + 20;
@@ -2213,6 +2480,142 @@ const Game = {
         g.fillStyle = `rgba(185,126,238,${.1 + (i % 3) * .035})`;
         g.beginPath(); g.arc(x, y, glow, 0, Math.PI * 2); g.fill();
       }
+    }
+    g.restore();
+  },
+
+  drawSpecialFloorDetails(g, map, camX, camY) {
+    const b = map.settlementBounds;
+    if (b) {
+      const kind = map.settlementKind;
+      const base = {
+        lake: ['rgba(84,55,34,.90)', 'rgba(214,167,90,.50)'],
+        thief: ['rgba(75,49,42,.86)', 'rgba(206,118,65,.38)'],
+        falseHome: ['rgba(95,111,117,.78)', 'rgba(220,237,230,.30)'],
+        dream: ['rgba(48,42,91,.84)', 'rgba(156,199,235,.36)'],
+      }[kind] || ['rgba(58,50,44,.82)', 'rgba(215,184,122,.32)'];
+      g.save();
+      for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) {
+        if (map.tiles[y][x] !== Art.T.FLOOR && map.tiles[y][x] !== Art.T.PATH && map.tiles[y][x] !== Art.T.CIRCLE) continue;
+        const sx = Math.round(x * 32 - camX), sy = Math.round(y * 32 - camY);
+        g.fillStyle = base[0]; g.fillRect(sx, sy, 32, 32);
+        g.strokeStyle = base[1]; g.lineWidth = 1;
+        if (kind === 'lake') {
+          // 幅の違う板と継ぎ目で、石床ではなく水上の足場に見せる。
+          for (const yy of [8, 19, 30]) { g.beginPath(); g.moveTo(sx, sy + yy); g.lineTo(sx + 32, sy + yy); g.stroke(); }
+          const seam = 7 + Math.abs((x * 11 + y * 7) % 18);
+          g.beginPath(); g.moveTo(sx + seam, sy); g.lineTo(sx + seam - 2, sy + 8); g.stroke();
+          g.fillStyle = 'rgba(240,207,131,.48)'; g.fillRect(sx + 3, sy + 3, 2, 2); g.fillRect(sx + 27, sy + 25, 2, 2);
+        } else if (kind === 'thief') {
+          g.strokeRect(sx + 2.5, sy + 2.5, 27, 27);
+          if ((x + y) % 3 === 0) {
+            g.strokeStyle = 'rgba(236,190,119,.25)'; g.beginPath();
+            g.moveTo(sx + 9, sy + 22); g.lineTo(sx + 16, sy + 9); g.lineTo(sx + 23, sy + 22); g.stroke();
+          }
+        } else if (kind === 'falseHome') {
+          g.strokeRect(sx + 1.5, sy + 1.5, 29, 29);
+          g.fillStyle = `rgba(224,241,234,${.035 + ((x + y) % 3) * .018})`; g.fillRect(sx + 4, sy + 4, 24, 24);
+        } else if (kind === 'dream') {
+          g.strokeRect(sx + 3.5, sy + 3.5, 25, 25);
+          const pulse = .25 + Math.sin(this.animT * 2 + x + y) * .08;
+          g.fillStyle = `rgba(188,232,255,${pulse})`;
+          g.beginPath(); g.arc(sx + 16, sy + 16, 1.5, 0, Math.PI * 2); g.fill();
+        }
+      }
+
+      const sx = b.x * 32 - camX, sy = b.y * 32 - camY, sw = b.w * 32, sh = b.h * 32;
+      if (kind === 'lake') {
+        // 浮島の縁、係留杭、灯り。背景の水色と暖色の生活光を対比させる。
+        g.strokeStyle = 'rgba(225,184,101,.82)'; g.lineWidth = 3; g.strokeRect(sx + 2, sy + 2, sw - 4, sh - 4);
+        for (const [lx, ly] of [[sx + 8, sy + 9], [sx + sw - 8, sy + 9], [sx + 8, sy + sh - 9], [sx + sw - 8, sy + sh - 9]]) {
+          g.strokeStyle = '#3e281b'; g.lineWidth = 3; g.beginPath(); g.moveTo(lx, ly + 14); g.lineTo(lx, ly - 8); g.stroke();
+          const glow = g.createRadialGradient(lx, ly - 9, 1, lx, ly - 9, 25);
+          glow.addColorStop(0, 'rgba(255,220,128,.72)'); glow.addColorStop(1, 'rgba(255,177,66,0)');
+          g.fillStyle = glow; g.fillRect(lx - 25, ly - 34, 50, 50);
+          g.fillStyle = '#ffd47a'; g.beginPath(); g.arc(lx, ly - 9, 3, 0, Math.PI * 2); g.fill();
+        }
+      } else if (kind === 'thief') {
+        for (const [cx, cy, col] of [[sx + 8, sy + 10, '#9f423e'], [sx + sw - 72, sy + 10, '#b9783e']]) {
+          g.fillStyle = col; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + 64, cy); g.lineTo(cx + 54, cy + 25); g.lineTo(cx + 8, cy + 25); g.closePath(); g.fill();
+          g.strokeStyle = 'rgba(255,222,162,.38)'; g.stroke();
+        }
+        g.fillStyle = '#68432c'; g.fillRect(sx + sw - 42, sy + sh - 35, 25, 22);
+        g.strokeStyle = '#c49358'; g.strokeRect(sx + sw - 41.5, sy + sh - 34.5, 24, 21);
+      } else if (kind === 'falseHome') {
+        // どこか懐かしいのに線が二重にずれた家。記憶の不自然さを一目で出す。
+        for (let i = 0; i < 3; i++) {
+          const hx = sx + 20 + i * (sw - 74) / 2, hy = sy + 28 + (i % 2) * 10;
+          for (const off of [0, 4]) {
+            g.strokeStyle = off ? 'rgba(104,184,207,.24)' : 'rgba(231,237,216,.48)'; g.lineWidth = 2;
+            g.strokeRect(hx + off, hy + 18, 48, 36);
+            g.beginPath(); g.moveTo(hx - 4 + off, hy + 19); g.lineTo(hx + 24 + off, hy - 2); g.lineTo(hx + 52 + off, hy + 19); g.stroke();
+          }
+        }
+      } else if (kind === 'dream') {
+        for (let i = 0; i < 7; i++) {
+          const ox = sx + 18 + ((i * 53) % Math.max(40, sw - 36));
+          const oy = sy + 15 + ((i * 31) % Math.max(35, sh - 30));
+          const pulse = .55 + Math.sin(this.animT * 2.4 + i) * .24;
+          g.shadowColor = '#a9e9ff'; g.shadowBlur = 12;
+          g.fillStyle = `rgba(202,239,255,${pulse})`; g.beginPath(); g.arc(ox, oy, 2.2, 0, Math.PI * 2); g.fill();
+        }
+      }
+      g.restore();
+    }
+
+    if (map.rescueSite) {
+      const r = map.rescueSite;
+      const x = r.cx * 32 + 16 - camX, y = r.cy * 32 + 28 - camY;
+      g.save();
+      const glow = g.createRadialGradient(x, y - 22, 3, x, y - 22, 52);
+      glow.addColorStop(0, 'rgba(225,147,78,.20)'); glow.addColorStop(1, 'rgba(70,34,26,0)');
+      g.fillStyle = glow; g.fillRect(x - 54, y - 74, 108, 95);
+      g.strokeStyle = r.rescued ? 'rgba(132,105,78,.72)' : 'rgba(207,176,126,.88)';
+      g.lineWidth = 3;
+      if (r.rescued) {
+        g.beginPath(); g.moveTo(x - 28, y - 49); g.lineTo(x - 15, y + 4); g.moveTo(x + 26, y - 46); g.lineTo(x + 12, y + 5); g.stroke();
+      } else {
+        g.strokeRect(x - 30, y - 54, 60, 58);
+        for (let bx = -20; bx <= 20; bx += 10) { g.beginPath(); g.moveTo(x + bx, y - 53); g.lineTo(x + bx, y + 3); g.stroke(); }
+        g.beginPath(); g.moveTo(x - 30, y - 54); g.lineTo(x, y - 70); g.lineTo(x + 30, y - 54); g.stroke();
+      }
+      g.restore();
+    }
+  },
+
+  drawSpecialFloorAtmosphere(g, map) {
+    const kind = map.settlementKind;
+    if (!kind && !map.rescueSite) return;
+    g.save();
+    if (kind === 'lake') {
+      const wash = g.createLinearGradient(0, 0, 0, 448);
+      wash.addColorStop(0, 'rgba(75,207,224,.13)'); wash.addColorStop(1, 'rgba(4,54,82,.13)');
+      g.fillStyle = wash; g.fillRect(0, 0, 512, 448);
+      for (let i = 0; i < 8; i++) {
+        const x = ((i * 79 + this.animT * 13) % 590) - 40, y = 55 + (i * 47) % 350;
+        g.strokeStyle = `rgba(177,244,250,${.08 + (i % 3) * .025})`; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + 24, y); g.stroke();
+      }
+    } else if (kind === 'falseHome') {
+      g.fillStyle = map.falseHomeAwake ? 'rgba(36,28,60,.12)' : 'rgba(213,230,221,.16)'; g.fillRect(0, 0, 512, 448);
+      for (let i = 0; i < 6; i++) {
+        const y = 54 + i * 66 + Math.sin(this.animT * .7 + i) * 9;
+        const mist = g.createLinearGradient(0, y, 512, y);
+        mist.addColorStop(0, 'rgba(228,242,235,0)'); mist.addColorStop(.5, 'rgba(228,242,235,.11)'); mist.addColorStop(1, 'rgba(228,242,235,0)');
+        g.fillStyle = mist; g.fillRect(0, y, 512, 20);
+      }
+    } else if (kind === 'dream') {
+      g.fillStyle = 'rgba(19,12,59,.13)'; g.fillRect(0, 0, 512, 448);
+      for (let i = 0; i < 20; i++) {
+        const x = (i * 91 + Math.sin(this.animT * .6 + i) * 26 + 520) % 520;
+        const y = (i * 43 - this.animT * (3 + i % 3) + 470) % 470;
+        g.fillStyle = `rgba(196,231,255,${.09 + (i % 4) * .025})`;
+        g.beginPath(); g.arc(x, y, 1 + (i % 3) * .4, 0, Math.PI * 2); g.fill();
+      }
+    } else if (kind === 'thief' || map.rescueSite) {
+      const warm = g.createRadialGradient(256, 240, 30, 256, 240, 320);
+      warm.addColorStop(0, 'rgba(210,111,58,.08)'); warm.addColorStop(1, 'rgba(30,11,18,.10)');
+      g.fillStyle = warm; g.fillRect(0, 0, 512, 448);
     }
     g.restore();
   },
@@ -2477,7 +2880,13 @@ const Game = {
   drawFieldPartyMember(g, actor, camX, camY) {
     const footX = actor.x + 16 - camX, footY = actor.y + 31 - camY;
     if (actor.member.kind === 'human') {
-      this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir, this.moving, this.moveT);
+      if (this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir, this.moving, this.moveT)) return;
+      const human = HUMANS[actor.member.id];
+      const fallback = human && (Art.get(`${human.spr}_${actor.dir}0`) || Art.get(`${human.spr}_0`) || Art.get(human.spr));
+      if (fallback) {
+        this.drawActorShadow(g, footX, footY, 11, 3.5);
+        g.drawImage(fallback, Math.round(footX - 16), Math.round(footY - 31), 32, 32);
+      }
       return;
     }
     const def = MONSTERS[actor.member.id];
@@ -2485,15 +2894,29 @@ const Game = {
     if (!spr) return;
     const large = !!def.big;
     const size = large ? 48 : 38;
-    const bob = this.moving ? Math.sin(this.walkAnimT * Math.PI * 6) * 1.2 : Math.sin(this.animT * 2.2 + actor.x) * .45;
+    const phase = this.walkAnimT * Math.PI * 6 + actor.x * .11;
+    const species = actor.member.id;
+    let bob = Math.sin(this.animT * 2.2 + actor.x) * .45, sx = 1, sy = 1, lean = 0;
+    if (this.moving) {
+      if (/slime/.test(species)) {
+        const pulse = Math.sin(phase);
+        sx = 1 + pulse * .075; sy = 1 - pulse * .095; bob = -Math.abs(pulse) * 1.2;
+      } else if (/bat/.test(species)) {
+        sy = .9 + Math.abs(Math.sin(phase * 1.35)) * .18; bob = Math.sin(phase * .55) * 1.7 - 2;
+      } else if (/ghost|wraith|mist|aquan/.test(species)) {
+        bob = Math.sin(phase * .72) * 2; lean = Math.sin(phase * .5) * .025;
+      } else if (/rock|machine/.test(species)) {
+        bob = -Math.abs(Math.sin(phase)) * 1.1; sx = 1 + Math.sin(phase) * .018;
+      } else {
+        bob = -Math.abs(Math.sin(phase)) * 1.3; lean = Math.sin(phase) * .025;
+      }
+    }
     this.drawActorShadow(g, footX, footY, large ? 17 : 12, large ? 5 : 3.5);
     g.save();
-    if (actor.dir === 'l') {
-      g.translate(Math.round(footX), 0); g.scale(-1, 1);
-      g.drawImage(spr, -size / 2, Math.round(footY - size + bob + 2), size, size);
-    } else {
-      g.drawImage(spr, Math.round(footX - size / 2), Math.round(footY - size + bob + 2), size, size);
-    }
+    g.translate(Math.round(footX), Math.round(footY + 2));
+    g.rotate(lean);
+    g.scale(actor.dir === 'l' ? -sx : sx, sy);
+    g.drawImage(spr, -size / 2, -size + bob, size, size);
     g.restore();
   },
 
@@ -2513,25 +2936,24 @@ const Game = {
     if (this.fieldCharacters && this.fieldCharacters[n.spr]) {
       if (this.drawFieldCharacterSheet(g, n.spr, footX, footY, n.dir || 'd', false, 0)) return;
     }
-    const npcSheet = this.fieldCharacters && this.fieldCharacters.villageNpcs;
-    const npcCell = {
-      elder: [0, 0, 44, 60], woman: [1, 0, 42, 58], man: [2, 0, 42, 58],
-      child: [0, 1, 36, 48], merchant: [1, 1, 42, 58], guard: [2, 1, 42, 58],
+    const npcSheet = this.npcDirectionSheets && this.npcDirectionSheets[n.spr];
+    const npcSize = {
+      elder: [44, 60], woman: [42, 58], man: [42, 58],
+      child: [36, 48], merchant: [42, 58], guard: [42, 58], celest: [42, 60],
     }[n.spr];
-    if (npcCell && npcSheet && npcSheet.complete && npcSheet.naturalWidth) {
-      const [col, row, dw, dh] = npcCell;
-      const cellW = npcSheet.naturalWidth / 3, cellH = npcSheet.naturalHeight / 2;
+    if (npcSize && npcSheet && npcSheet.complete && npcSheet.naturalWidth) {
+      const [dw, dh] = npcSize;
+      const cellW = npcSheet.naturalWidth / 4, cellH = npcSheet.naturalHeight;
+      const col = { d: 0, l: 1, r: 2, u: 3 }[n.dir || 'd'] ?? 0;
       const phase = n.npcMoving ? (n.npcMoveT || 0) * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
-      const lift = n.npcMoving ? Math.abs(Math.sin(phase)) * 1.35 : Math.sin(phase) * .3;
-      const lean = n.npcMoving ? Math.sin(phase * 2) * .025 : 0;
-      const squash = n.npcMoving ? Math.sin(phase * 2) * .012 : Math.sin(phase) * .003;
+      const lift = n.npcMoving ? Math.abs(Math.sin(phase)) * .75 : Math.sin(phase) * .18;
+      const step = n.npcMoving ? Math.sin(phase) * .55 : 0;
+      const squash = n.npcMoving ? Math.sin(phase * 2) * .006 : 0;
       this.drawActorShadow(g, footX, footY, Math.max(9, dw * .24), 3.5);
       g.save();
-      g.translate(Math.round(footX), Math.round(footY + 2));
-      g.rotate(lean);
+      g.translate(Math.round(footX + step), Math.round(footY + 2));
       g.scale(1 - squash, 1 + squash);
-      if (n.dir === 'l') g.scale(-1, 1);
-      g.drawImage(npcSheet, col * cellW, row * cellH, cellW, cellH,
+      g.drawImage(npcSheet, col * cellW, 0, cellW, cellH,
         -dw / 2, -dh - lift, dw, dh);
       g.restore();
       return;
@@ -2545,22 +2967,44 @@ const Game = {
     }
   },
 
-  drawVillageForeground(g, camX, camY) {
-    const im = this.villageArt;
+  drawTownForeground(g, im, camX, camY) {
     if (!im || !im.naturalWidth) return;
     const worldW = this.map.w * 32, worldH = this.map.h * 32;
     const scaleX = im.naturalWidth / worldW, scaleY = im.naturalHeight / worldH;
-    const regions = [
-      // 左下の樹冠、池の大樹、右下の樹冠。背景の同じ位置を切り抜いて再描画する。
-      { x: 78, y: 292, rx: 54, ry: 62 },
-      { x: 548, y: 254, rx: 70, ry: 82 },
-      { x: 430, y: 382, rx: 48, ry: 52 },
-    ];
+    const regionsByFloor = {
+      1: [
+        { type: 'ellipse', x: 78, y: 292, rx: 54, ry: 62 },
+        { type: 'ellipse', x: 548, y: 254, rx: 70, ry: 82 },
+        { type: 'ellipse', x: 430, y: 382, rx: 48, ry: 52 },
+      ],
+      11: [
+        { type: 'rect', x: 76, y: 35, w: 174, h: 160 },
+        { type: 'rect', x: 386, y: 45, w: 154, h: 138 },
+      ],
+      21: [
+        { type: 'rect', x: 0, y: 0, w: 286, h: 194 },
+        { type: 'rect', x: 364, y: 0, w: 222, h: 194 },
+        { type: 'ellipse', x: 132, y: 245, rx: 78, ry: 77 },
+      ],
+      31: [
+        { type: 'rect', x: 0, y: 0, w: 278, h: 160 },
+        { type: 'rect', x: 286, y: 18, w: 176, h: 148 },
+        { type: 'rect', x: 480, y: 20, w: 160, h: 148 },
+        { type: 'rect', x: 0, y: 145, w: 142, h: 142 },
+        { type: 'rect', x: 124, y: 188, w: 174, h: 128 },
+        { type: 'rect', x: 0, y: 322, w: 244, h: 190 },
+        { type: 'rect', x: 356, y: 326, w: 284, h: 186 },
+      ],
+    };
+    const regions = regionsByFloor[this.floor] || [];
+    if (!regions.length) return;
     g.save();
     g.beginPath();
     for (const r of regions) {
-      g.moveTo(r.x + r.rx - camX, r.y - camY);
-      g.ellipse(r.x - camX, r.y - camY, r.rx, r.ry, 0, 0, Math.PI * 2);
+      if (r.type === 'ellipse') {
+        g.moveTo(r.x + r.rx - camX, r.y - camY);
+        g.ellipse(r.x - camX, r.y - camY, r.rx, r.ry, 0, 0, Math.PI * 2);
+      } else g.rect(r.x - camX, r.y - camY, r.w, r.h);
     }
     g.clip();
     g.drawImage(im,
@@ -2568,7 +3012,8 @@ const Game = {
       0, 0, 512, 448);
     g.restore();
 
-    // 水面と噴水に控えめな動きを足し、静止画感を弱める。
+    if (this.floor !== 1) return;
+    // 1Fの水面と噴水に控えめな動きを足し、静止画感を弱める。
     const pulse = .34 + Math.sin(this.animT * 2.1) * .08;
     g.save();
     g.strokeStyle = `rgba(147, 239, 255, ${pulse})`;
@@ -2664,14 +3109,10 @@ const Game = {
   },
 
   drawVillageNpcPortrait(g, id, x, y, w, h) {
-    const sheet = this.fieldCharacters && this.fieldCharacters.villageNpcs;
-    const cell = {
-      elder: [0, 0], woman: [1, 0], man: [2, 0],
-      child: [0, 1], merchant: [1, 1], guard: [2, 1],
-    }[id];
-    if (!cell || !sheet || !sheet.complete || !sheet.naturalWidth) return false;
-    const cellW = sheet.naturalWidth / 3, cellH = sheet.naturalHeight / 2;
-    const sx = cell[0] * cellW, sy = cell[1] * cellH;
+    const sheet = this.npcDirectionSheets && this.npcDirectionSheets[id];
+    if (!sheet || !sheet.complete || !sheet.naturalWidth) return false;
+    const cellW = sheet.naturalWidth / 4, cellH = sheet.naturalHeight;
+    const sx = 0, sy = 0;
     // 顔と上半身を会話枠へ拡大し、フィールド用の足元余白は切り落とす。
     g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
     g.drawImage(sheet, sx + cellW * .12, sy + cellH * .04, cellW * .76, cellH * .67,
@@ -2713,7 +3154,7 @@ const Game = {
       return;
     }
     if (m.kind === 'pickMember' || m.kind === 'pickTarget') {
-      const list = m.humansOnly ? this.party.filter(p => p.kind === 'human') : this.party;
+      const list = m.targets || (m.humansOnly ? this.party.filter(p => p.kind === 'human') : this.party);
       UI.window(g, 8, 8, 240, 30 + list.length * 44);
       for (let i = 0; i < list.length; i++) {
         const p = list[i];
@@ -2806,20 +3247,25 @@ const Game = {
     }
     if (m.kind === 'party') {
       const all = [...this.party, ...this.reserve];
-      UI.window(g, 8, 8, 340, 66 + all.length * 24);
+      const pageSize = 12;
+      const start = Math.floor(m.sel / pageSize) * pageSize;
+      const view = all.slice(start, start + pageSize);
+      UI.window(g, 8, 8, 340, 66 + view.length * 24);
       UI.text(g, 'なかま (いれかえ: ふたり えらぶ)', 24, 34, '#ffd', 13);
-      for (let i = 0; i < all.length; i++) {
+      UI.text(g, `${start + 1}-${start + view.length}/${all.length}`, 278, 34, '#789', 11);
+      for (let i = start; i < start + view.length; i++) {
         const p = all[i];
         const inParty = i < this.party.length;
         let col = i === m.sel ? '#fff' : '#aab';
         if (i === m.picked) col = '#fd8';
-        UI.text(g, `${inParty ? '★' : '　'}${p.name}`, 44, 64 + i * 24, col, 15);
-        UI.text(g, `Lv${p.level}`, 210, 64 + i * 24, '#9ab', 13);
-        UI.text(g, p.kind === 'monster' ? MONSTERS[p.id].name : Chars.jobNameOf(p), 260, 64 + i * 24, '#9ab', 12);
+        const row = i - start;
+        UI.text(g, `${inParty ? '★' : '　'}${p.name}`, 44, 64 + row * 24, col, 15);
+        UI.text(g, `Lv${p.level}`, 210, 64 + row * 24, '#9ab', 13);
+        UI.text(g, p.kind === 'monster' ? MONSTERS[p.id].name : Chars.jobNameOf(p), 260, 64 + row * 24, '#9ab', 12);
       }
-      UI.cursor(g, 24, 52 + m.sel * 24, 'right');
+      UI.cursor(g, 24, 52 + (m.sel - start) * 24, 'right');
       UI.window(g, 8, 390, 460, 50);
-      UI.text(g, this.partyMsg || '★=せんとうメンバー(4にんまで・まものは 2ひきまで)', 24, 420, this.partyMsg ? '#fc8' : '#9ab', 13);
+      UI.text(g, this.partyMsg || '★=せんとうメンバー(4にんまで・上下でページ移動)', 24, 420, this.partyMsg ? '#fc8' : '#9ab', 13);
       return;
     }
     if (m.kind === 'warp') {
@@ -2828,7 +3274,7 @@ const Game = {
       UI.text(g, 'どこへ とぶ?', 24, 34, '#ffd', 14);
       for (let i = 0; i < towns.length; i++) {
         const f = towns[i];
-        const nm = TOWN_DATA[f] ? TOWN_DATA[f].name : `${f}かい`;
+        const nm = TOWN_DATA[f] ? TOWN_DATA[f].name : (REST_POINT_NAMES[f] || `${f}かい`);
         UI.text(g, `${f}F ${nm}`, 50, 64 + i * 24, i === m.sel ? '#fff' : '#aab', 15);
       }
       UI.cursor(g, 26, 52 + m.sel * 24, 'right');

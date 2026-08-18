@@ -137,7 +137,8 @@ const Maps = (() => {
     }
     // リノは11Fで待っている
     if (floor === 11 && !flags['join_rino']) {
-      map.npcs.push({ x: 10, y: 6, spr: 'rino', event: 'join_rino', lines: null });
+      // 描き下ろし背景の噴水を避け、右側の店前で待つ。
+      map.npcs.push({ x: 13, y: 7, spr: 'rino', event: 'join_rino', lines: null });
     }
     // 宿屋のおやじ・道具屋・武具屋
     map.npcs.push({ x: 5, y: 5, spr: 'merchant', event: 'inn', lines: null });
@@ -301,7 +302,221 @@ const Maps = (() => {
 
     // 16F: 塔が保存した異世界の記憶。戦闘のない景観・物語階にする。
     if (floor === 16) addUpsideDownSea(map, rooms);
+
+    // 18F: 水没層に浮かぶ生活拠点。通常の宿場町とは違う「途中に現れる町」。
+    if (floor === 18) addLakeSettlement(map, rooms);
+
+    // 24F: 27Fの町へつながる、行商人の救出イベント。
+    if (floor === 24) addMerchantRescue(map, rooms, flags);
+
+    // 27F: 盗賊たちが廃墟を使って作った、第二の中間拠点。
+    if (floor === 27) addThiefSettlement(map, rooms, flags);
+
+    // 34F: 塔がソラの記憶から再現した、少しずつ食い違う故郷。
+    if (floor === 34) addFalseHome(map, rooms, flags);
+
+    // 37F: 40F決戦前に仲間の声を聞ける、夢の中の休息地。
+    if (floor === 37) addDreamSettlement(map, rooms);
     return map;
+  }
+
+  // 特別階用に、既存の部屋を少し広げて「町として読める」広場を作る。
+  // 階段・宝箱・手記は上書きせず、生成マップ本来の導線も残す。
+  function carveFeaturePlaza(map, rooms) {
+    const center = r => ({ x: Math.floor(r.x + r.w / 2), y: Math.floor(r.y + r.h / 2) });
+    const ranked = rooms.map(r => {
+      const p = center(r);
+      const de = Math.abs(p.x - map.entry.x) + Math.abs(p.y - map.entry.y);
+      const dx = Math.abs(p.x - map.exit.x) + Math.abs(p.y - map.exit.y);
+      return { r, ...p, score: r.w * r.h * 4 + Math.min(de, dx) };
+    }).filter(p => {
+      const onEntry = p.x === map.entry.x && p.y === map.entry.y;
+      const onExit = p.x === map.exit.x && p.y === map.exit.y;
+      return !onEntry && !onExit;
+    }).sort((a, b) => b.score - a.score || a.y - b.y || a.x - b.x);
+    const anchor = ranked[0] || { ...center(rooms[0]) };
+    const w = 9, h = 7;
+    const x = Math.max(1, Math.min(map.w - w - 1, anchor.x - Math.floor(w / 2)));
+    const y = Math.max(1, Math.min(map.h - h - 1, anchor.y - Math.floor(h / 2)));
+    const removable = new Set([T.WALL, T.FLOOR, T.WATER, T.TREE, T.PILLAR, T.GRASS, T.PATH]);
+    for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) {
+      if (removable.has(map.tiles[yy][xx])) map.tiles[yy][xx] = T.FLOOR;
+    }
+    return { x, y, w, h, cx: x + Math.floor(w / 2), cy: y + Math.floor(h / 2) };
+  }
+
+  function plazaSpotPicker(map, bounds) {
+    const used = [];
+    const fixedOccupied = (x, y) => {
+      if ((x === map.entry.x && y === map.entry.y) || (x === map.exit.x && y === map.exit.y)) return true;
+      if (map.chests.some(c => c.x === x && c.y === y)) return true;
+      if (map.journalAt && map.journalAt.x === x && map.journalAt.y === y) return true;
+      if (map.flavorAt && map.flavorAt.x === x && map.flavorAt.y === y) return true;
+      return false;
+    };
+    return (wantX, wantY) => {
+      const candidates = [];
+      for (let y = bounds.y + 1; y < bounds.y + bounds.h - 1; y++) {
+        for (let x = bounds.x + 1; x < bounds.x + bounds.w - 1; x++) {
+          if (map.tiles[y][x] !== T.FLOOR || fixedOccupied(x, y)) continue;
+          if (used.some(p => p.x === x && p.y === y)) continue;
+          candidates.push({ x, y, d: Math.abs(x - wantX) + Math.abs(y - wantY) });
+        }
+      }
+      candidates.sort((a, b) => a.d - b.d || a.y - b.y || a.x - b.x);
+      const p = candidates[0] || { x: bounds.cx, y: bounds.cy };
+      used.push(p);
+      return { x: p.x, y: p.y };
+    };
+  }
+
+  function addLakeSettlement(map, rooms) {
+    const b = carveFeaturePlaza(map, rooms);
+    const take = plazaSpotPicker(map, b);
+    const rest = take(b.cx, b.cy + 2);
+    const elder = take(b.cx, b.cy - 1);
+    const inn = take(b.x + 2, b.cy);
+    const shop = take(b.x + b.w - 3, b.cy);
+    const child = take(b.cx - 2, b.cy + 1);
+    const fisher = take(b.cx + 2, b.cy + 1);
+    map.safe = true;
+    map.settlement = true;
+    map.restPoint = true;
+    map.shopFloor = 11;
+    map.name = 'みずかがみの浮島町 ミズベ';
+    map.settlementKind = 'lake';
+    map.settlementBounds = b;
+    map.restSpawn = rest;
+    map.safeZones = [{ x: b.x - 1, y: b.y - 1, w: b.w + 2, h: b.h + 2 }];
+    map.npcs.push(
+      { ...elder, spr: 'elder', event: 'lake_story_18', dir: 'd', lines: null },
+      { ...inn, spr: 'woman', event: 'inn', dir: 'r', lines: null },
+      { ...shop, spr: 'merchant', event: 'shop_items', dir: 'l', lines: null },
+      { ...child, spr: 'child', wander: true, wanderRadius: 2, lines: [
+        'こども「うえにも したにも みずが あるよ。ここだけ ぷかぷか ういてるんだ。」',
+        '「まものも ときどき さかなを とりにくるよ。おなじ いきものなんだね。」',
+      ] },
+      { ...fisher, spr: 'man', wander: true, wanderRadius: 2, lines: [
+        'つりびと「20かいの ぬしは、みずを あやつるのではない。みずの こえを きいている。」',
+        '「たたかうなら、あいてが いきを ととのえる しゅんかんを みのがすな。」',
+      ] },
+    );
+    return true;
+  }
+
+  function addMerchantRescue(map, rooms, flags) {
+    const b = carveFeaturePlaza(map, rooms);
+    const take = plazaSpotPicker(map, b);
+    const merchant = take(b.cx, b.cy);
+    map.name = 'こわれ橋の鳥かご';
+    map.rescueSite = { ...b, rescued: !!flags.rescued_merchant_24 };
+    map.safeZones = [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+    if (!flags.rescued_merchant_24) {
+      map.npcs.push({ ...merchant, spr: 'merchant', event: 'rescue_merchant_24', dir: 'd', lines: null });
+    } else {
+      map.flavorSpots = map.flavorSpots || [];
+      const note = take(b.cx, b.cy);
+      map.tiles[note.y][note.x] = T.SIGN;
+      map.flavorSpots.push({ ...note, lines: [
+        'こわれた おりの そばに、しょうにんの かきおきがある。',
+        '『27かいの ネグラで みせを ひらく。いのちの おんじんは いつでも かんげい!』',
+      ] });
+    }
+    return true;
+  }
+
+  function addThiefSettlement(map, rooms, flags) {
+    const b = carveFeaturePlaza(map, rooms);
+    const take = plazaSpotPicker(map, b);
+    const rest = take(b.cx, b.cy + 2);
+    const boss = take(b.cx, b.cy - 1);
+    const inn = take(b.x + 2, b.cy);
+    const merchant = take(b.x + b.w - 3, b.cy);
+    const scout = take(b.cx - 2, b.cy + 1);
+    const child = take(b.cx + 2, b.cy + 1);
+    map.safe = true;
+    map.settlement = true;
+    map.restPoint = true;
+    map.shopFloor = 21;
+    map.name = 'ぬすびとの路地町 ネグラ';
+    map.settlementKind = 'thief';
+    map.settlementBounds = b;
+    map.restSpawn = rest;
+    map.safeZones = [{ x: b.x - 1, y: b.y - 1, w: b.w + 2, h: b.h + 2 }];
+    map.npcs.push(
+      { ...boss, spr: 'guard', event: 'thief_story_27', dir: 'd', lines: null },
+      { ...inn, spr: 'woman', event: 'inn', dir: 'r', lines: null },
+      flags.rescued_merchant_24
+        ? { ...merchant, spr: 'merchant', event: 'shop_items', dir: 'l', lines: null }
+        : { ...merchant, spr: 'merchant', dir: 'l', lines: ['しょうにん「しなものを はこぶ なかまが 24かいから もどらないんだ……。」'] },
+      { ...scout, spr: 'man', wander: true, wanderRadius: 2, lines: [
+        'みはり「ぬすむのは きらいじゃない。でも、いのちまで とるやつは ここに いれない。」',
+        '「30かいの ドロンゾは、むかし この町の おやぶんだったって うわさだ。」',
+      ] },
+      { ...child, spr: 'child', wander: true, wanderRadius: 2, lines: [
+        'こども「ここでは みんな、ほんとの なまえを かくしてるの。」',
+        '「でも こまったときに よんでくれる なまえなら、にせものでも いいんだって。」',
+      ] },
+    );
+    return true;
+  }
+
+  function addFalseHome(map, rooms, flags) {
+    const b = carveFeaturePlaza(map, rooms);
+    const take = plazaSpotPicker(map, b);
+    const elder = take(b.cx, b.cy - 1);
+    const mother = take(b.cx - 2, b.cy + 1);
+    const child = take(b.cx + 2, b.cy + 1);
+    map.safe = true;
+    map.settlement = true;
+    map.music = 'mystery';
+    map.name = 'かえれない ふるさと';
+    map.settlementKind = 'falseHome';
+    map.falseHomeAwake = !!flags.story_false_home_34;
+    map.settlementBounds = b;
+    map.safeZones = [{ x: b.x - 1, y: b.y - 1, w: b.w + 2, h: b.h + 2 }];
+    map.npcs.push(
+      { ...elder, spr: 'elder', event: 'false_home_34', dir: 'd', lines: null },
+      { ...mother, spr: 'woman', dir: 'r', lines: [
+        'おんな「ソラ、おかえり。ずっと ここで まっていたのよ。」',
+        'その こえは やさしい。けれど ソラの しっている だれの こえでもない。',
+      ] },
+      { ...child, spr: 'child', dir: 'l', lines: [
+        'こども「とうになんか のぼらなくて いいよ。ここなら ずっと あさだよ。」',
+        'こどもの かげだけが、ちがう ほうこうへ のびている。',
+      ] },
+    );
+    return true;
+  }
+
+  function addDreamSettlement(map, rooms) {
+    const b = carveFeaturePlaza(map, rooms);
+    const take = plazaSpotPicker(map, b);
+    const rest = take(b.cx, b.cy + 2);
+    const keeper = take(b.cx, b.cy - 1);
+    const inn = take(b.x + 2, b.cy);
+    const memory = take(b.x + b.w - 3, b.cy);
+    const child = take(b.cx - 2, b.cy + 1);
+    map.safe = true;
+    map.settlement = true;
+    map.restPoint = true;
+    map.shopFloor = 31;
+    map.music = 'mystery';
+    map.name = 'ゆめつむぎの町 ネムリ';
+    map.settlementKind = 'dream';
+    map.settlementBounds = b;
+    map.restSpawn = rest;
+    map.safeZones = [{ x: b.x - 1, y: b.y - 1, w: b.w + 2, h: b.h + 2 }];
+    map.npcs.push(
+      { ...keeper, spr: 'elder', event: 'dream_story_37', dir: 'd', lines: null },
+      { ...inn, spr: 'woman', event: 'inn', dir: 'r', lines: null },
+      { ...memory, spr: 'merchant', event: 'shop_items', dir: 'l', lines: null },
+      { ...child, spr: 'child', wander: true, wanderRadius: 2, lines: [
+        'こども「ここは あしたになると きえちゃう町。だから きょうの はなしを いっぱい するの。」',
+        '「40かいまで いったら、また ここで ゆめを みてね。」',
+      ] },
+    );
+    return true;
   }
 
   function addUpsideDownSea(map, rooms) {
@@ -369,6 +584,8 @@ const Maps = (() => {
     map.tiles[cy][cx] = T.CIRCLE;
     map.campfires = [{ x: cx, y: cy }];
     map.safeZones = [{ x: cx - 2, y: cy - 2, w: 5, h: 5 }];
+    map.restPoint = true;
+    map.restSpawn = { x: cx, y: cy + 1 };
     map.npcs.push(
       { ...npcSpots[0], spr: 'guard', event: 'camp_rest', dir: 'd', lines: null },
       { ...npcSpots[1], spr: 'merchant', event: 'camp_story', dir: 'd', lines: null },
@@ -461,7 +678,22 @@ const Maps = (() => {
       const pondEdge = x >= 11 && x <= 13 && y >= 8 && y <= 12;
       if (!(central || plaza || westLane || eastLane || pondEdge)) return false;
     }
-    for (const n of map.npcs) if (n.x === x && n.y === y) return false;
+    if ([11, 21, 31].includes(map.floor) && map.town) {
+      // V5描き下ろし町の共通構図（中央広場＋十字路＋左右の店先）に合わせる。
+      // 背景上の建物・水路へ踏み込まず、全NPC・店・上下階段には到達できる通行域。
+      const central = x >= 9 && x <= 11 && y >= 0 && y <= 14;
+      const plaza = x >= 5 && x <= 14 && y >= 5 && y <= 10;
+      const westLane = x >= 3 && x <= 8 && y >= 5 && y <= 13;
+      const eastLane = x >= 12 && x <= 16 && y >= 3 && y <= 12;
+      const lowerRoad = x >= 7 && x <= 13 && y >= 9 && y <= 14;
+      const fountain = x >= 9 && x <= 11 && y >= 7 && y <= 8;
+      if (!(central || plaza || westLane || eastLane || lowerRoad) || fountain) return false;
+    }
+    for (const n of map.npcs) {
+      if (n.x === x && n.y === y) return false;
+      // 移動アニメ中は出発マスも占有し、見た目だけ残った町人を通り抜けない。
+      if (n.npcMoving && n.npcFromX === x && n.npcFromY === y) return false;
+    }
     if (map.campfires && map.campfires.some(f => f.x === x && f.y === y)) return false;
     return true;
   }
