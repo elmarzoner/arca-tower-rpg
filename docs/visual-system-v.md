@@ -115,7 +115,12 @@
 | `assets/v5/tier2-enemies-v5.webp` | Gob, Aquan, red Pluru and Aquera | active |
 | `assets/v5/tier2-battle-bg-v5.webp` | Flooded-cistern battle arena | active |
 | `assets/v5/tier3-environment-v5.webp` | Fungal smugglers' warren kit | active |
-| `assets/v5/tier3-enemies-v5.webp` | Kasadon, Doroborg, Gob soldier, Iwakoro and Dronzo | active |
+| `assets/v5/tier3-enemies-v5.webp` | Legacy Tier 3 group atlas | development fallback |
+| `assets/v6/enemy-mush-v6.webp` | Kasadon individual transparent battle sprite | active |
+| `assets/v6/enemy-thief-v6.webp` | Doroborg individual transparent battle sprite | active |
+| `assets/v6/enemy-gobsold-v6.webp` | Gob soldier individual transparent battle sprite | active |
+| `assets/v6/enemy-rock3-v6.webp` | Iwakoro individual transparent battle sprite | active |
+| `assets/v6/enemy-dronzo-v6.webp` | Dronzo unique transparent boss sprite | active |
 | `assets/v5/tier3-battle-bg-v5.webp` | Smugglers' cistern battle arena | active |
 | `assets/v5/tier4-environment-v5.webp` | Midnight dream-gallery kit | active |
 | `assets/v5/tier4-enemies-v5.webp` | Yurari, shadow rat, dark bat and Nocturna | active |
@@ -189,10 +194,19 @@
 ## Generation record: Tiers 3 and 4
 
 - Tool path: built-in image generation, followed by local chroma-key removal for transparent atlases
-- Tier 3: ochre smugglers' cistern, timber structures, violet fungi, four normal enemies and unique boss Dronzo
+- Tier 3: ochre smugglers' cistern, timber structures and violet fungi; its original grouped enemy atlas is retained only as a development fallback
 - Tier 4: indigo dream gallery, moonstone structures, dream mist, three normal enemies and unique boss Nocturna
 - Regional battle backgrounds: Tier 2, Tier 3 and Tier 4 load their own 16:9 arena only when battle starts
-- Runtime: enemy IDs map explicitly to regional atlas cells; legacy name-based fallback is restricted to later unfinished tiers
+- Runtime: Tier 4 enemy IDs map explicitly to regional atlas cells; Tier 3 uses the V6 individual sprites below
+
+## Generation record: Tier 3 individual enemy sprites
+
+- Tool path: built-in image generation, followed by chroma-key removal, transparent-edge cleanup and lossless WebP optimization
+- Identity references: the five Tier 3 designs in `assets/v5/tier3-enemies-v5-source.png`
+- Prompt set: preserve each enemy's silhouette, costume, materials and warm-left lighting; render one complete non-pixel JRPG enemy only, centered on a flat chroma-green background, with no text, frame, shadow, extra subject or cropped body part
+- Subjects: Kasadon, Doroborg, Gob soldier, Iwakoro and the unique boss Dronzo
+- Runtime: only enemy IDs present in the current battle are lazy-loaded; aspect ratio and foot baseline are preserved
+- Runtime assets: `assets/v6/enemy-*-v6.webp`
 
 ## Generation record: front-half towns
 

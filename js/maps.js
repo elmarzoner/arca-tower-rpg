@@ -317,6 +317,13 @@ const Maps = (() => {
 
     // 37F: 40F決戦前に仲間の声を聞ける、夢の中の休息地。
     if (floor === 37) addDreamSettlement(map, rooms);
+
+    // 通常階にも「立ち止まって覚えておける場所」を置く。
+    // 既存の調べる会話だけを使い、セーブデータへ新しい状態は持たせない。
+    if (floor === 13) addFloodedDetour(map, flags);
+    if (floor === 22) addBalanceRelics(map, rooms);
+    if (floor === 28) addRedClothTrail(map, rooms);
+    if (floor === 33) addEchoMirror(map, rooms, flags);
     return map;
   }
 
@@ -368,6 +375,237 @@ const Maps = (() => {
       used.push(p);
       return { x: p.x, y: p.y };
     };
+  }
+
+  const FEATURE_WALKABLE = new Set([
+    T.FLOOR, T.GRASS, T.UP, T.DOWN, T.CARPET, T.CIRCLE,
+    T.CHEST_OPEN, T.DOOR, T.BED, T.PATH, T.FLOWER,
+  ]);
+  const CARDINAL = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+  function featureOccupied(map, x, y) {
+    if ((map.entry && map.entry.x === x && map.entry.y === y)
+      || (map.exit && map.exit.x === x && map.exit.y === y)) return true;
+    const single = [map.journalAt, map.flavorAt, map.worldAnchor, map.campCenter];
+    if (single.some(p => p && p.x === x && p.y === y)) return true;
+    const groups = [
+      map.chests, map.npcs, map.flavorSpots, map.storySpots,
+      map.floorWarps, map.pitfalls, map.campfires,
+    ];
+    return groups.some(group => group && group.some(p => p.x === x && p.y === y));
+  }
+
+  function reachableTiles(map) {
+    const seen = new Set();
+    const queue = [{ x: map.entry.x, y: map.entry.y }];
+    seen.add(`${map.entry.x},${map.entry.y}`);
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i];
+      for (const [dx, dy] of CARDINAL) {
+        const x = p.x + dx, y = p.y + dy;
+        const key = `${x},${y}`;
+        if (x < 0 || y < 0 || x >= map.w || y >= map.h || seen.has(key)) continue;
+        if (!FEATURE_WALKABLE.has(map.tiles[y][x])) continue;
+        seen.add(key); queue.push({ x, y });
+      }
+    }
+    return seen;
+  }
+
+  function shortestFloorPath(map) {
+    const startKey = `${map.entry.x},${map.entry.y}`;
+    const endKey = `${map.exit.x},${map.exit.y}`;
+    const queue = [{ ...map.entry }];
+    const from = new Map([[startKey, null]]);
+    for (let i = 0; i < queue.length && !from.has(endKey); i++) {
+      const p = queue[i];
+      for (const [dx, dy] of CARDINAL) {
+        const x = p.x + dx, y = p.y + dy;
+        const key = `${x},${y}`;
+        if (x < 0 || y < 0 || x >= map.w || y >= map.h || from.has(key)) continue;
+        if (!FEATURE_WALKABLE.has(map.tiles[y][x])) continue;
+        from.set(key, `${p.x},${p.y}`); queue.push({ x, y });
+      }
+    }
+    if (!from.has(endKey)) return [];
+    const path = [];
+    for (let key = endKey; key; key = from.get(key)) {
+      const [x, y] = key.split(',').map(Number);
+      path.push({ x, y });
+    }
+    return path.reverse();
+  }
+
+  function markerAccessible(map, marker, reachable = reachableTiles(map)) {
+    return CARDINAL.some(([dx, dy]) => reachable.has(`${marker.x + dx},${marker.y + dy}`));
+  }
+
+  function roomMarkerCandidates(map, rooms) {
+    const out = [];
+    for (const r of rooms) {
+      const containsStairs = [map.entry, map.exit].some(p => p
+        && p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h);
+      if (containsStairs) continue;
+      for (let y = r.y + 1; y < r.y + r.h - 1; y++) {
+        for (let x = r.x + 1; x < r.x + r.w - 1; x++) {
+          if (map.tiles[y][x] !== T.FLOOR || featureOccupied(map, x, y)) continue;
+          const open = CARDINAL.filter(([dx, dy]) => FEATURE_WALKABLE.has(map.tiles[y + dy][x + dx])).length;
+          if (open < 3) continue;
+          const fromEntry = Math.abs(x - map.entry.x) + Math.abs(y - map.entry.y);
+          const fromExit = Math.abs(x - map.exit.x) + Math.abs(y - map.exit.y);
+          out.push({ x, y, r, fromEntry, fromExit, score: r.w * r.h * 4 + Math.min(fromEntry, fromExit) });
+        }
+      }
+    }
+    return out;
+  }
+
+  // 13F: 最短路の一部を水が塞ぐが、すぐ横の乾いた足場で必ず迂回できる。
+  function addFloodedDetour(map, flags) {
+    const path = shortestFloorPath(map);
+    for (let i = 4; i < path.length - 4; i++) {
+      const before = path[i - 1], water = path[i], after = path[i + 1];
+      const horizontal = before.y === water.y && water.y === after.y;
+      const vertical = before.x === water.x && water.x === after.x;
+      if (!horizontal && !vertical) continue;
+      if (featureOccupied(map, water.x, water.y)) continue;
+      for (const side of [-1, 1]) {
+        const ox = horizontal ? 0 : side, oy = horizontal ? side : 0;
+        const bypass = [before, water, after].map(p => ({ x: p.x + ox, y: p.y + oy }));
+        if (bypass.some(p => p.x <= 0 || p.y <= 0 || p.x >= map.w - 1 || p.y >= map.h - 1
+          || featureOccupied(map, p.x, p.y)
+          || ![T.WALL, T.FLOOR].includes(map.tiles[p.y][p.x]))) continue;
+        const oldWater = map.tiles[water.y][water.x];
+        const oldBypass = bypass.map(p => map.tiles[p.y][p.x]);
+        map.tiles[water.y][water.x] = T.WATER;
+        bypass.forEach(p => { map.tiles[p.y][p.x] = T.PATH; });
+        if (!reachableTiles(map).has(`${map.exit.x},${map.exit.y}`)) {
+          map.tiles[water.y][water.x] = oldWater;
+          bypass.forEach((p, n) => { map.tiles[p.y][p.x] = oldBypass[n]; });
+          continue;
+        }
+        const source = { x: water.x - ox, y: water.y - oy };
+        const waterTiles = [{ ...water }];
+        if (source.x > 0 && source.y > 0 && source.x < map.w - 1 && source.y < map.h - 1
+          && map.tiles[source.y][source.x] === T.WALL && !featureOccupied(map, source.x, source.y)) {
+          map.tiles[source.y][source.x] = T.WATER;
+          waterTiles.push(source);
+        }
+        const lines = [
+          'あふれた みずが まっすぐな みちを ふさいでいる。',
+          'かべぎわには、だれかが ならべた かわいた いしの あしばが つづく。',
+        ];
+        if (flags.join_rino) {
+          lines.push('ソラは、リノに おそわった ことばを おもいだした。');
+          lines.push('リノ「とおれない みずじゃないよ。いそがず、あしもとを えらぼう。」');
+        } else lines.push('ソラ「いそがなくていい。かわいた ほうを まわろう。」');
+        map.flavorSpots = map.flavorSpots || [];
+        map.flavorSpots.push({ ...water, lines });
+        map.floodedDetour = { water: waterTiles, bypass };
+        map.name = 'なみだまりの 迂回路';
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 22F: 一つの発見を二つの石皿に分け、調べる順で意味がつながる小部屋。
+  function addBalanceRelics(map, rooms) {
+    const candidates = roomMarkerCandidates(map, rooms).sort((a, b) => b.score - a.score || a.y - b.y || a.x - b.x);
+    const first = candidates[0];
+    const second = first && candidates.find(p => p.r === first.r && Math.abs(p.x - first.x) + Math.abs(p.y - first.y) >= 3);
+    if (!first || !second) return false;
+    const markers = [first, second]
+      .map(p => ({ x: p.x, y: p.y }))
+      .sort((a, b) => a.x - b.x || a.y - b.y);
+    const old = markers.map(p => map.tiles[p.y][p.x]);
+    markers.forEach(p => { map.tiles[p.y][p.x] = T.PILLAR; });
+    const reachable = reachableTiles(map);
+    if (!reachable.has(`${map.exit.x},${map.exit.y}`) || markers.some(p => !markerAccessible(map, p, reachable))) {
+      markers.forEach((p, i) => { map.tiles[p.y][p.x] = old[i]; });
+      return false;
+    }
+    map.flavorSpots = map.flavorSpots || [];
+    map.flavorSpots.push(
+      { ...markers[0], lines: [
+        'ひだりの いしざらには、つぶれた きんかが つまれている。',
+        'きんかの おもみで、さらは ゆかまで しずんでいる。',
+      ] },
+      { ...markers[1], lines: [
+        'みぎの いしざらには、からの くすりびんが ひとつ。',
+        'それなのに、こちらの さらの ほうが ふかく しずんでいる。',
+        'ソラ「この とうは、いのちの ねうちを おぼえているんだ。」',
+      ] },
+    );
+    map.balanceRelics = markers;
+    map.name = 'いのちの てんびん';
+    return true;
+  }
+
+  // 28F: 離れた二部屋の印を読むと、盗賊町にも助け合いの掟があると分かる。
+  function addRedClothTrail(map, rooms) {
+    const candidates = roomMarkerCandidates(map, rooms);
+    const nearEntry = [...candidates].sort((a, b) => a.fromEntry - b.fromEntry || b.fromExit - a.fromExit)[0];
+    const nearExit = nearEntry && [...candidates]
+      .filter(p => p.r !== nearEntry.r)
+      .sort((a, b) => a.fromExit - b.fromExit || b.fromEntry - a.fromEntry)[0];
+    if (!nearEntry || !nearExit) return false;
+    const markers = [nearEntry, nearExit].map(p => ({ x: p.x, y: p.y }));
+    const old = markers.map(p => map.tiles[p.y][p.x]);
+    markers.forEach(p => { map.tiles[p.y][p.x] = T.SIGN; });
+    const reachable = reachableTiles(map);
+    if (!reachable.has(`${map.exit.x},${map.exit.y}`) || markers.some(p => !markerAccessible(map, p, reachable))) {
+      markers.forEach((p, i) => { map.tiles[p.y][p.x] = old[i]; });
+      return false;
+    }
+    map.flavorSpots = map.flavorSpots || [];
+    map.flavorSpots.push(
+      { ...markers[0], lines: [
+        'あかい ぬのが、うえを さす やじるしの かたちで むすばれている。',
+        'うらに『ネグラへ かえる みちは、だれにでも のこせ』とある。',
+      ] },
+      { ...markers[1], lines: [
+        'ふたつめの あかい ぬの。そばに みずと ほしにくが おかれている。',
+        'ぬすびとたちは、あとから のぼる なかまの ぶんも のこしていった。',
+      ] },
+    );
+    map.redClothTrail = markers;
+    map.name = 'あか布の 道しるべ';
+    return true;
+  }
+
+  // 33F: 加入済みの仲間がいれば、闇に惑うソラへ短く声をかける。
+  function addEchoMirror(map, rooms, flags) {
+    const spot = roomMarkerCandidates(map, rooms).sort((a, b) => b.score - a.score || a.y - b.y || a.x - b.x)[0];
+    if (!spot) return false;
+    const marker = { x: spot.x, y: spot.y };
+    const old = map.tiles[marker.y][marker.x];
+    map.tiles[marker.y][marker.x] = T.PILLAR;
+    const reachable = reachableTiles(map);
+    if (!reachable.has(`${map.exit.x},${map.exit.y}`) || !markerAccessible(map, marker, reachable)) {
+      map.tiles[marker.y][marker.x] = old;
+      return false;
+    }
+    const lines = [
+      'くろい かがみに うつった ソラの かげだけが、うしろを ふりかえった。',
+    ];
+    if (flags.join_gald) {
+      lines.push('かがみの おくから、ガルドの こえが ひびく。');
+      lines.push('ガルド「まえだけ みろ。せなかは おれたちに あずけろ。」');
+      lines.push('ソラ「……うん。ほんものの こえなら まよわない。」');
+    } else if (flags.join_rino) {
+      lines.push('かがみの おくから、リノの こえが ひびく。');
+      lines.push('リノ「かがみじゃなく、わたしたちの こえを きいて。」');
+      lines.push('ソラ「……うん。ひとりで のぼってるんじゃ ない。」');
+    } else {
+      lines.push('ソラ「こわくても、ここまでの であいは きえない。」');
+      lines.push('ソラが まえを むくと、かがみの かげも しずかに きえた。');
+    }
+    map.flavorSpots = map.flavorSpots || [];
+    map.flavorSpots.push({ ...marker, lines });
+    map.echoMirror = marker;
+    map.name = 'こだま鏡の 回廊';
+    return true;
   }
 
   function addLakeSettlement(map, rooms) {

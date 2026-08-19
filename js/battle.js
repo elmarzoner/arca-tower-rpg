@@ -29,6 +29,43 @@ const Battle = {
     b_nocturna: { atlas: 'battleSpritesV5Tier4', rect: [1387, 33, 565, 700] },
   },
 
+  // 21〜30Fはアトラスの生成ノイズを避け、敵ごとの透過素材を必要時だけ読む。
+  // 1戦に登場する分だけ取得するため、画質を上げても初回ロードを重くしない。
+  v6EnemySources: {
+    mush: 'assets/v6/enemy-mush-v6.webp',
+    thief: 'assets/v6/enemy-thief-v6.webp',
+    gobsold: 'assets/v6/enemy-gobsold-v6.webp',
+    rock3: 'assets/v6/enemy-rock3-v6.webp',
+    b_dronzo: 'assets/v6/enemy-dronzo-v6.webp',
+  },
+  v6EnemyImages: {},
+
+  ensureV6Enemy(enemyId) {
+    const src = this.v6EnemySources[enemyId];
+    if (!src) return null;
+    if (!this.v6EnemyImages[enemyId]) {
+      const image = new Image();
+      // 個別素材の取得に失敗した時だけ旧アトラスを読み、通信量と表示継続を両立する。
+      image.addEventListener('error', () => {
+        Game.loadAssetOnce(Game.battleSpritesV5Tier3, 'assets/v5/tier3-enemies-v5.webp');
+      }, { once: true });
+      this.v6EnemyImages[enemyId] = image;
+    }
+    return Game.loadAssetOnce(this.v6EnemyImages[enemyId], src);
+  },
+
+  drawV6Enemy(g, enemyId, x, y, boxW, boxH) {
+    const image = this.v6EnemyImages[enemyId];
+    if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return false;
+    const fit = Math.min(boxW / image.naturalWidth, boxH / image.naturalHeight);
+    const drawW = image.naturalWidth * fit;
+    const drawH = image.naturalHeight * fit;
+    const drawX = x + (boxW - drawW) / 2;
+    const drawY = y + boxH - drawH;
+    g.drawImage(image, drawX, drawY, drawW, drawH);
+    return true;
+  },
+
   drawV5Enemy(g, enemyId, x, y, boxW, boxH) {
     const crop = this.v5EnemyCrops[enemyId];
     if (!crop) return false;
@@ -75,11 +112,12 @@ const Battle = {
     const regionalBg = Game.battleBackgroundsV5 && Game.battleBackgroundsV5[tier];
     if (regionalBg) Game.loadAssetOnce(regionalBg, `assets/v5/tier${tier}-battle-bg-v5.webp`);
     else Game.loadAssetOnce(Game.battleArt, 'assets/battle-bg-v4.png');
+    // 上位階へ再登場する敵も、所属階層に関係なく個別V6素材を使う。
+    for (const enemyId of new Set(opts.enemySpecs)) this.ensureV6Enemy(enemyId);
     if (tier === 1) Game.loadAssetOnce(Game.battleSpritesV5, 'assets/v5/tier1-enemies-v5.webp');
     else if (tier === 2) Game.loadAssetOnce(Game.battleSpritesV5Tier2, 'assets/v5/tier2-enemies-v5.webp');
-    else if (tier === 3) Game.loadAssetOnce(Game.battleSpritesV5Tier3, 'assets/v5/tier3-enemies-v5.webp');
     else if (tier === 4) Game.loadAssetOnce(Game.battleSpritesV5Tier4, 'assets/v5/tier4-enemies-v5.webp');
-    else Game.loadAssetOnce(Game.monsterAtlas, 'assets/monster-atlas-v4.png');
+    else if (tier !== 3) Game.loadAssetOnce(Game.monsterAtlas, 'assets/monster-atlas-v4.png');
     Game.loadAssetOnce(Game.partyBattleV5, 'assets/v5/party-battle-v5.webp');
     this.opts = opts;
     this.boss = !!opts.boss;
@@ -94,6 +132,7 @@ const Battle = {
       this.enemies.push({
         spec: sp, name: m.name + suffix, hp: m.hp, maxhp: m.hp,
         atk: m.atk, def: m.def, agi: m.agi, sleep: 0, flash: 0, dead: false, defendTurn: false,
+        appearIndex: this.enemies.length,
       });
     }
     this.phase = 'intro';
@@ -106,6 +145,8 @@ const Battle = {
     this.bait = false;
     this.shake = 0;
     this.fx = [];
+    this.visualTime = 0;
+    this.activeActor = null;
     this.turn = 0;
     this.result = null;
     this.tameCandidate = null;
@@ -143,6 +184,8 @@ const Battle = {
 
   // ---------------- 更新 ----------------
   update(dt) {
+    // 登場演出や行動中表示はゲーム進行を止めず、描画上だけ滑らかに補間する。
+    this.visualTime = Math.min(30, (this.visualTime || 0) + Math.min(dt, .05));
     if (this.shake > 0) this.shake -= dt;
     for (const e of this.enemies) if (e.flash > 0) e.flash -= dt;
     for (const fx of this.fx) fx.t += dt;
@@ -186,6 +229,7 @@ const Battle = {
     this.memberIdx = 0;
     this.skipToFirstAlive();
     if (this.memberIdx >= Game.party.length) { this.beginResolve(); return; }
+    this.activeActor = { party: Game.party[this.memberIdx] };
     this.menu = { kind: 'cmd', sel: 0 };
   },
 
@@ -373,6 +417,7 @@ const Battle = {
   // ---------------- ターン解決 ----------------
   beginResolve() {
     this.menu = null;
+    this.activeActor = null;
     // 敵の行動を追加
     for (const e of this.aliveEnemies()) {
       this.actions.push({ enemy: e, cmd: 'enemy' });
@@ -392,12 +437,15 @@ const Battle = {
 
   nextResolveStep() {
     if (this.resolveIdx >= this.actions.length) {
+      this.activeActor = null;
       // ターン終了処理: 毒・目覚め
       for (const m of this.aliveParty()) {
         if (m.poison) {
           const d = Math.max(1, Math.floor(m.maxhp / 10));
           m.hp = Math.max(1, m.hp - d);
-          this.push(`${m.name}は どくに おかされている! ${d}の ダメージ!`);
+          this.push(`${m.name}は どくに おかされている! ${d}の ダメージ!`, () => {
+            this.addPopup({ party: m }, d, 'hurt');
+          });
         }
         if (m.sleep > 0) {
           m.sleep--;
@@ -421,6 +469,7 @@ const Battle = {
       return;
     }
     const a = this.actions[this.resolveIdx++];
+    this.activeActor = a.member ? { party: a.member } : { enemy: a.enemy };
     if (a.member) this.execMemberAction(a);
     else this.execEnemyAction(a.enemy);
     if (this.queue.length === 0) this.nextResolveStep();
@@ -433,8 +482,33 @@ const Battle = {
     return Math.max(0, Math.floor(d));
   },
 
-  addFx(kind, target, duration = .55) {
-    this.fx.push({ kind, target, t: 0, duration, seed: Math.random() * 1000 });
+  effectAnchor(target) {
+    if (target && target.enemy) {
+      const alive = this.aliveEnemies();
+      const i = Math.max(0, alive.indexOf(target.enemy));
+      const spec = MONSTERS[target.enemy.spec];
+      return {
+        x: 256 + (i - (alive.length - 1) / 2) * (spec.boss ? 150 : 118),
+        y: 190,
+        side: 'enemy',
+      };
+    }
+    if (target && target.party) {
+      return { x: 36 + Math.max(0, Game.party.indexOf(target.party)) * 124, y: 60, side: 'party' };
+    }
+    return null;
+  },
+
+  addFx(kind, target, duration = .55, detail = null) {
+    this.fx.push({
+      kind, target, t: 0, duration, seed: Math.random() * 1000,
+      anchor: this.effectAnchor(target), ...(detail || {}),
+    });
+  },
+
+  addPopup(target, value, tone = 'damage', label = '') {
+    const duration = tone === 'critical' ? .86 : .7;
+    this.addFx('popup', target, duration, { value, tone, label });
   },
 
   execMemberAction(a) {
@@ -455,7 +529,10 @@ const Battle = {
         if (crit) this.push('かいしんの いちげき!!', () => AudioSys.sfx('crit'));
         if (dmg === 0) this.push('ミス! ダメージを あたえられない!');
         else this.push(`${t.name}に ${dmg}の ダメージ!`, () => {
-          AudioSys.sfx('hit'); t.flash = 0.3; this.addFx(crit ? 'critical' : 'slash', { enemy: t }); t.hp -= dmg;
+          AudioSys.sfx('hit'); t.flash = 0.3;
+          this.addFx(crit ? 'critical' : 'slash', { enemy: t });
+          this.addPopup({ enemy: t }, dmg, crit ? 'critical' : 'damage', crit ? 'かいしん!' : '');
+          t.hp -= dmg;
           if (t.hp <= 0) { t.dead = true; self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t); }
         });
         break;
@@ -506,11 +583,15 @@ const Battle = {
           const v = item.pow[0] + Math.floor(Math.random() * (item.pow[1] - item.pow[0] + 1));
           const healed = Math.min(t.maxhp - t.hp, v);
           t.hp += healed;
-          this.push(`${t.name}の HPが ${healed} かいふくした!`, () => AudioSys.sfx('heal'));
+          this.push(`${t.name}の HPが ${healed} かいふくした!`, () => {
+            AudioSys.sfx('heal'); this.addPopup({ party: t }, healed, 'heal');
+          });
         } else if (item.kind === 'mp') {
           const v = Math.min(t.maxmp - t.mp, item.pow[0]);
           t.mp += v;
-          this.push(`${t.name}の MPが ${v} かいふくした!`, () => AudioSys.sfx('heal'));
+          this.push(`${t.name}の MPが ${v} かいふくした!`, () => {
+            AudioSys.sfx('heal'); this.addPopup({ party: t }, v, 'mp');
+          });
         } else if (item.kind === 'cure_poison') {
           a.target.poison = false;
           this.push(`${a.target.name}の どくが なおった!`, () => AudioSys.sfx('heal'));
@@ -553,7 +634,7 @@ const Battle = {
           if (!t) continue;
           const dmg = Math.max(1, Math.floor(dmgRoll() * (t.sleep > 0 ? 1.2 : 1)));
           this.push(`${t.name}に ${dmg}の ダメージ!`, () => {
-            t.flash = 0.3; t.hp -= dmg;
+            t.flash = 0.3; this.addPopup({ enemy: t }, dmg, 'magic'); t.hp -= dmg;
             if (t.hp <= 0 && !t.dead) { t.dead = true; self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t); }
           });
         }
@@ -566,7 +647,9 @@ const Battle = {
           const v = Math.min(t.maxhp - t.hp, dmgRoll());
           if (v <= 0) continue;
           healedAnyone = true;
-          this.push(`${t.name}の HPが ${v} かいふくした!`, () => { t.hp += v; });
+          this.push(`${t.name}の HPが ${v} かいふくした!`, () => {
+            t.hp += v; this.addPopup({ party: t }, v, 'heal');
+          });
         }
         if (!healedAnyone) this.push('しかし HPは まんたんだった。');
         break;
@@ -574,7 +657,9 @@ const Battle = {
       case 'revive': {
         const t = a.target;
         if (t.hp > 0) { this.push('しかし なにも おこらなかった。'); break; }
-        this.push(`${t.name}が いきかえった!`, () => { t.hp = Math.floor(t.maxhp / 2); });
+        this.push(`${t.name}が いきかえった!`, () => {
+          t.hp = Math.floor(t.maxhp / 2); this.addPopup({ party: t }, t.hp, 'heal');
+        });
         break;
       }
       case 'sleep': {
@@ -618,6 +703,7 @@ const Battle = {
     const dealDamage = (t, dmg, msg) => {
       this.push(msg || `${t.name}に ${dmg}の ダメージ!`, () => {
         AudioSys.sfx('hit'); self.shake = 0.3; self.addFx('impact', { party: t });
+        self.addPopup({ party: t }, dmg, 'hurt');
         t.hp = Math.max(0, t.hp - dmg);
         if (t.hp <= 0) { t.sleep = 0; self.push(`${t.name}は ちからつきた……`, () => AudioSys.sfx('dead')); self.checkWipe(); }
       });
@@ -676,7 +762,9 @@ const Battle = {
       } else if (sp.kind === 'heal') {
         const hurt = this.aliveEnemies().filter(x => x.hp < x.maxhp).sort((a2, b2) => a2.hp / a2.maxhp - b2.hp / b2.maxhp)[0] || e;
         const v = Math.min(hurt.maxhp - hurt.hp, sp.pow[0]);
-        this.push(`${hurt.name}の きずが かいふくした!`, () => { hurt.hp += v; });
+        this.push(`${hurt.name}の きずが かいふくした!`, () => {
+          hurt.hp += v; if (v > 0) this.addPopup({ enemy: hurt }, v, 'heal');
+        });
       } else if (sp.kind === 'sleep') {
         for (const t of alive) {
           if (Math.random() < 0.35 && t.sleep === 0) {
@@ -797,8 +885,8 @@ const Battle = {
             return;
           }
           const nick = MON_NICKNAMES[sp] || m.name;
-          // 加入直後から編成候補になるよう、主人公と同じレベルで迎える。
-          const member = Chars.makeMonster(sp, Math.max(1, Game.party[0].level), nick);
+          // 並び順や転職直後のレベルに左右されず、加入直後から一人分の戦力にする。
+          const member = Chars.makeMonster(sp, Game.recruitLevel(), nick);
           if (Game.party.length < 4) {
             Game.party.push(member);
             self.push(`${m.name}は なかまに なった!`, () => { AudioSys.sfx('join'); Game.save(); });
@@ -851,27 +939,44 @@ const Battle = {
       const cx = W / 2 + (i - (n - 1) / 2) * (spec.boss ? 150 : 118);
       const baseY = H * 0.62;
       const bob = Math.sin(performance.now() / 400 + i * 1.7) * 3;
-      const x = cx - sw / 2 + sx, y = baseY - sh + bob + sy;
+      const enterRaw = Math.max(0, Math.min(1, ((this.visualTime || 0) - e.appearIndex * .1) / (spec.boss ? .42 : .34)));
+      const enter = 1 - Math.pow(1 - enterRaw, 3);
+      const enterScale = .72 + enter * .28;
+      const drawW = sw * enterScale, drawH = sh * enterScale;
+      const x = cx - drawW / 2 + sx, y = baseY - drawH + bob + sy;
+      g.save();
+      g.globalAlpha = enter;
+      // 解決中の行動者だけに軽い照準リングを出し、誰の手番かを一目で示す。
+      if (this.phase === 'resolve' && this.activeActor && this.activeActor.enemy === e) {
+        const pulse = .5 + .5 * Math.sin(performance.now() / 105);
+        g.strokeStyle = '#ffd36a'; g.lineWidth = 2;
+        g.globalAlpha = enter * (.52 + pulse * .34);
+        g.beginPath();
+        g.ellipse(cx + sx, baseY - drawH * .48 + sy, drawW * (.54 + pulse * .03), drawH * (.54 + pulse * .03), 0, 0, Math.PI * 2);
+        g.stroke();
+        g.globalAlpha = enter;
+      }
       // 接地影
       g.fillStyle = 'rgba(0,0,0,0.32)';
       g.beginPath();
-      g.ellipse(cx + sx, baseY - 3 + sy, sw * 0.34, 6, 0, 0, Math.PI * 2);
+      g.ellipse(cx + sx, baseY - 3 + sy, sw * 0.34 * enterScale, 6 * enterScale, 0, 0, Math.PI * 2);
       g.fill();
-      if (!this.drawV5Enemy(g, e.spec, x, y, sw, sh)) {
+      if (!this.drawV6Enemy(g, e.spec, x, y, drawW, drawH)
+          && !this.drawV5Enemy(g, e.spec, x, y, drawW, drawH)) {
         const atlas = Game.monsterAtlas;
         if (atlas && atlas.complete && atlas.naturalWidth) {
           const cell = atlas.naturalWidth / 4, ai = this.atlasIndex(spec.spr);
           const ax = (ai % 4) * cell, ay = Math.floor(ai / 4) * cell;
-          g.drawImage(atlas, ax, ay, cell, cell, x, y, sw, sh);
-        } else if (spr) g.drawImage(spr, x, y, sw, sh);
+          g.drawImage(atlas, ax, ay, cell, cell, x, y, drawW, drawH);
+        } else if (spr) g.drawImage(spr, x, y, drawW, drawH);
       }
       if (e.flash > 0 && Math.floor(e.flash * 20) % 2 === 0) {
+        g.save();
         g.globalCompositeOperation = 'source-atop';
         g.globalAlpha = 0.7;
         g.fillStyle = '#fff';
-        g.fillRect(x, y, sw, sh);
-        g.globalAlpha = 1;
-        g.globalCompositeOperation = 'source-over';
+        g.fillRect(x, y, drawW, drawH);
+        g.restore();
       }
       // 敵の名前と残りHPを常時表示し、攻撃の成果と危険度を把握しやすくする。
       const hpW = spec.boss ? 124 : 82;
@@ -889,12 +994,14 @@ const Battle = {
       if (this.menu && this.menu.kind === 'targetE' && this.menu.sel === i) {
         UI.cursor(g, cx - 8 + sx, hpY - 31, 'down');
       }
+      g.restore();
     }
-
-    this.drawEffects(g, sx, sy);
 
     // パーティーステータス
     this.drawPartyStatus(g);
+
+    // パーティー対象のヒット演出や数値がステータス窓に隠れない順序で重ねる。
+    this.drawEffects(g, sx, sy);
 
     // コマンドメニュー
     if (this.phase === 'command' && this.menu) {
@@ -971,9 +1078,18 @@ const Battle = {
       const m = Game.party[i];
       const x = 8 + i * (w + 6);
       UI.window(g, x, 8, w, 74);
-      if (this.phase === 'command' && this.memberIdx === i) {
-        g.strokeStyle = '#ffe58a'; g.lineWidth = 2;
+      const choosing = this.phase === 'command' && this.memberIdx === i;
+      const acting = this.phase === 'resolve' && this.activeActor && this.activeActor.party === m;
+      if (choosing || acting) {
+        const pulse = .5 + .5 * Math.sin(performance.now() / 110);
+        g.fillStyle = acting ? `rgba(83,221,255,${.06 + pulse * .07})` : 'rgba(255,229,138,.07)';
+        g.fillRect(x + 7, 15, w - 14, 59);
+        g.strokeStyle = acting ? '#6fe6ff' : '#ffe58a'; g.lineWidth = acting ? 2.5 : 2;
         g.beginPath(); g.roundRect(x + 2, 10, w - 4, 70, 5); g.stroke();
+        if (acting) {
+          g.fillStyle = '#bff6ff';
+          g.fillRect(x + 12, 11, Math.floor((w - 24) * (.45 + pulse * .55)), 2);
+        }
       }
       const col = m.hp <= 0 ? '#f66' : (m.hp < m.maxhp * 0.25 ? '#fc6' : '#fff');
       const partyAtlas = Game.partyBattleV5;
@@ -1006,23 +1122,56 @@ const Battle = {
       const alive = this.aliveEnemies(), i = Math.max(0, alive.indexOf(target));
       return { x: 256 + (i - (alive.length - 1) / 2) * (MONSTERS[target.spec].boss ? 150 : 118) + sx, y: 190 + sy };
     };
-    const partyPoint = target => ({ x: 67 + Math.max(0, Game.party.indexOf(target)) * 124, y: 48 });
+    const partyPoint = target => ({ x: 36 + Math.max(0, Game.party.indexOf(target)) * 124, y: 60 });
     for (const fx of this.fx) {
       const p = fx.t / fx.duration, alpha = Math.sin(Math.PI * p);
       let center = { x: 256 + sx, y: 190 + sy };
-      if (fx.target && fx.target.enemy) center = enemyPoint(fx.target.enemy);
+      if (fx.anchor) {
+        center = {
+          x: fx.anchor.x + (fx.anchor.side === 'enemy' ? sx : 0),
+          y: fx.anchor.y + (fx.anchor.side === 'enemy' ? sy : 0),
+        };
+      } else if (fx.target && fx.target.enemy) center = enemyPoint(fx.target.enemy);
       else if (fx.target && fx.target.party) center = partyPoint(fx.target.party);
-      g.save(); g.globalAlpha = alpha;
-      if (fx.kind === 'slash' || fx.kind === 'critical') {
+      g.save();
+      if (fx.kind === 'popup') {
+        const popIn = Math.min(1, p / .12);
+        const fadeOut = Math.min(1, (1 - p) / .26);
+        const rise = 13 + p * 30;
+        const bounce = Math.sin(Math.min(1, p * 3.2) * Math.PI) * 7;
+        const tone = fx.tone || 'damage';
+        const color = tone === 'heal' ? '#82ffac' : tone === 'mp' ? '#79dcff' :
+          tone === 'critical' ? '#ffe66f' : tone === 'magic' ? '#d9b7ff' :
+          tone === 'hurt' ? '#ff9a78' : '#fff7e2';
+        const prefix = tone === 'heal' || tone === 'mp' ? '+' : '-';
+        const fontSize = tone === 'critical' ? 24 : 20;
+        const yy = center.y - rise - bounce;
+        g.globalAlpha = popIn * fadeOut;
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.font = `bold ${fontSize}px ${UI.FONT}`;
+        g.lineJoin = 'round'; g.strokeStyle = 'rgba(2,5,12,.95)'; g.lineWidth = 5;
+        g.strokeText(`${prefix}${fx.value}`, center.x, yy);
+        g.fillStyle = color; g.shadowColor = color; g.shadowBlur = tone === 'critical' ? 8 : 4;
+        g.fillText(`${prefix}${fx.value}`, center.x, yy);
+        if (fx.label) {
+          g.shadowBlur = 3; g.font = `bold 12px ${UI.FONT}`;
+          g.strokeStyle = 'rgba(2,5,12,.95)'; g.lineWidth = 4;
+          g.strokeText(fx.label, center.x, yy - 21);
+          g.fillStyle = '#fff3a8'; g.fillText(fx.label, center.x, yy - 21);
+        }
+      } else if (fx.kind === 'slash' || fx.kind === 'critical') {
+        g.globalAlpha = alpha;
         g.translate(center.x, center.y); g.rotate(-.62);
         g.strokeStyle = fx.kind === 'critical' ? '#ffe87a' : '#dffaff';
         g.shadowColor = fx.kind === 'critical' ? '#ff9f43' : '#6ee8ff'; g.shadowBlur = 12;
         g.lineWidth = fx.kind === 'critical' ? 8 : 5;
         g.beginPath(); g.moveTo(-45 + p * 16, 22); g.quadraticCurveTo(0, -18, 45 - p * 10, -24); g.stroke();
       } else if (fx.kind === 'impact') {
+        g.globalAlpha = alpha;
         g.strokeStyle = '#fff3c4'; g.lineWidth = 3; g.shadowColor = '#ff8d55'; g.shadowBlur = 10;
         for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; g.beginPath(); g.moveTo(center.x + Math.cos(a) * 5, center.y + Math.sin(a) * 5); g.lineTo(center.x + Math.cos(a) * (18 + p * 20), center.y + Math.sin(a) * (18 + p * 20)); g.stroke(); }
       } else {
+        g.globalAlpha = alpha;
         const colors = fx.kind === 'fire' ? ['#ff5b32','#ffd45b'] : fx.kind === 'ice' ? ['#7deaff','#e9ffff'] :
           fx.kind === 'lightning' ? ['#8ed8ff','#fff39a'] : fx.kind === 'heal' ? ['#72f0a8','#e8ffbf'] : ['#a78bff','#e7d8ff'];
         g.shadowColor = colors[0]; g.shadowBlur = 13;

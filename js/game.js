@@ -45,9 +45,15 @@ const Input = (() => {
       held.add(k);
       AudioSys.ensureCtx();
     },
-    // スティック移動は押しっぱなしだけを伝え、メニューへ持ち越す単発入力を作らない。
-    virtualHold(k) { held.add(k); AudioSys.ensureCtx(); },
+    // スティックは方向へ入った瞬間だけpressedを作る。フィールドはheld、
+    // メニュー・店・戦闘はpressedを読むため、同じ操作面を両方で使える。
+    virtualHold(k) {
+      if (!held.has(k) && Game.state !== 'field') virtualPressed.set(k, performance.now() + 500);
+      held.add(k); AudioSys.ensureCtx();
+    },
     virtualUp(k) { held.delete(k); },
+    // メニューでの素早いフリックも次フレームまでpressedを保持する。
+    virtualUnhold(k) { held.delete(k); },
   };
   window.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#touch-controls [data-key]').forEach(button => {
@@ -74,7 +80,7 @@ const Input = (() => {
     const knob = document.getElementById('stick-knob');
     let stickPointer = null, originX = 0, originY = 0, activeMoveKeys = new Set();
     const setMoveKeys = next => {
-      for (const key of activeMoveKeys) if (!next.has(key)) api.virtualUp(key);
+      for (const key of activeMoveKeys) if (!next.has(key)) api.virtualUnhold(key);
       for (const key of next) if (!activeMoveKeys.has(key)) api.virtualHold(key);
       activeMoveKeys = next;
     };
@@ -304,7 +310,7 @@ const Game = {
   state: 'boot',
   party: [], reserve: [], bag: [], equipBag: [], gold: 0, flags: {},
   floor: 1, map: null, px: 10, py: 12, dir: 'd',
-  ox: 0, oy: 0, moving: false, moveT: 0, animT: 0,
+  ox: 0, oy: 0, moving: false, moveT: 0, moveFromDir: 'd', animT: 0,
   walkAnimT: 0,
   partyPath: null, partyPathFrom: null,
   visitedTowns: [1], lastInn: 1, steps: 0, repel: 0,
@@ -699,6 +705,12 @@ const Game = {
   },
 
   rosterCount() { return this.party.length + this.reserve.length; },
+  recruitLevel() {
+    const hero = this.party.find(m => m.kind === 'human' && m.id === 'hero');
+    const highest = this.party.reduce((level, m) => Math.max(level, Number(m.level) || 1), 1);
+    // 並び順や転職直後の低レベルに引っ張られず、現在の冒険へすぐ参加できる水準にする。
+    return Math.max(1, Number(hero && hero.level) || 1, highest - 1);
+  },
   hasMonsterAlly(spec) {
     return [...this.party, ...this.reserve].some(m => m.kind === 'monster' && m.id === spec);
   },
@@ -742,7 +754,7 @@ const Game = {
       this.px = this.map.entry.x; this.py = this.map.entry.y;
     }
     this.ignoreStairs = { x: this.px, y: this.py };
-    this.ox = 0; this.oy = 0; this.moving = false;
+    this.ox = 0; this.oy = 0; this.moving = false; this.moveFromDir = this.dir;
     this.resetPartyPath();
     this.ensurePartyFieldAssets();
     for (const id of new Set(this.map.npcs.map(n => n.spr))) {
@@ -754,6 +766,7 @@ const Game = {
         if (!n.wander) return;
         n.homeX = n.x; n.homeY = n.y;
         n.dir = n.dir || (i % 2 ? 'l' : 'r');
+        n.npcFromDir = n.dir;
         n.npcWait = .8 + ((n.x * 7 + n.y * 3 + i) % 8) * .28;
         n.npcMoving = false; n.npcMoveT = 0;
       });
@@ -790,6 +803,12 @@ const Game = {
     const point = { x: this.px, y: this.py, dir: this.dir };
     this.partyPath = Array.from({ length: 4 }, () => ({ ...point }));
     this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
+  },
+
+  // 1マスの論理移動はそのままに、描画位置だけを滑らかに加減速させる。
+  fieldMoveEase(t) {
+    const p = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    return p * p * (3 - 2 * p);
   },
 
   playFieldMusic() {
@@ -968,12 +987,14 @@ const Game = {
       this.walkAnimT += dt;
       this.moveT += dt * 4.4;
       if (this.moveT >= 1) {
-        this.moving = false; this.ox = 0; this.oy = 0;
+        this.moveT = 1; this.moving = false; this.ox = 0; this.oy = 0;
+        this.moveFromDir = this.dir;
         this.onStep();
       } else {
         const d = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[this.dir];
-        this.ox = d[0] * (this.moveT - 1) * 32;
-        this.oy = d[1] * (this.moveT - 1) * 32;
+        const eased = this.fieldMoveEase(this.moveT);
+        this.ox = d[0] * (eased - 1) * 32;
+        this.oy = d[1] * (eased - 1) * 32;
       }
       return;
     }
@@ -987,6 +1008,7 @@ const Game = {
     else if (Input.held('left')) dir = 'l';
     else if (Input.held('right')) dir = 'r';
     if (!dir) return;
+    const fromDir = this.dir;
     this.dir = dir;
     const d = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[dir];
     const nx = this.px + d[0], ny = this.py + d[1];
@@ -995,7 +1017,7 @@ const Game = {
       this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
       this.partyPath = [{ x: nx, y: ny, dir }, ...this.partyPath].slice(0, 4);
       this.px = nx; this.py = ny;
-      this.moving = true; this.moveT = 0;
+      this.moving = true; this.moveT = 0; this.moveFromDir = fromDir;
       this.ox = -d[0] * 32; this.oy = -d[1] * 32;
     }
   },
@@ -1041,7 +1063,7 @@ const Game = {
         return true;
       });
       if (!next) { n.npcWait = .8 + Math.random() * 1.5; continue; }
-      n.npcFromX = n.x; n.npcFromY = n.y;
+      n.npcFromX = n.x; n.npcFromY = n.y; n.npcFromDir = n.dir || next.id;
       n.x += next.dx; n.y += next.dy; n.dir = next.id;
       n.npcMoveT = 0; n.npcMoving = true;
     }
@@ -1661,7 +1683,7 @@ const Game = {
     this.showDialog(je.lines, () => {
       this.flags[je.flag] = true;
       const levels = { rino: 5, gald: 14, fio: 24 };
-      const lvl = Math.max(levels[je.who] || 1, this.party[0].level - 1);
+      const lvl = Math.max(levels[je.who] || 1, this.recruitLevel() - 1);
       const member = Chars.makeHuman(je.who, lvl);
       AudioSys.sfx('join');
       if (this.party.length < 4) {
@@ -2462,17 +2484,21 @@ const Game = {
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => {
       const t = n.npcMoving ? Math.max(0, Math.min(1, n.npcMoveT || 0)) : 1;
-      const eased = t * t * (3 - 2 * t);
+      const eased = this.fieldMoveEase(t);
       const x = n.npcMoving ? n.npcFromX + (n.x - n.npcFromX) * eased : n.x;
       const y = n.npcMoving ? n.npcFromY + (n.y - n.npcFromY) * eased : n.y;
-      return { kind: 'npc', n, x, y, sortY: y * TS + 31 };
+      return {
+        kind: 'npc', n, x, y, moving: !!n.npcMoving, motionT: eased,
+        fromDir: n.npcFromDir || n.dir, sortY: y * TS + 31,
+      };
     });
     const pxx = Math.round(this.px * TS + this.ox - camX);
     const pyy = Math.round(this.py * TS + this.oy - camY);
     const followers = this.party.filter(m => !(m.kind === 'human' && m.id === 'hero')).slice(0, 3);
     const pathTo = this.partyPath || [];
     const pathFrom = this.partyPathFrom || pathTo;
-    const progress = this.moving ? this.moveT : 1;
+    const rawProgress = this.moving ? this.moveT : 1;
+    const progress = this.fieldMoveEase(rawProgress);
     // 階段・ワープ直後は全員の経路が先頭と同じマスから始まる。
     // その数フレームだけ全員を重ねて描くと一体化して見えるため、
     // 実際に隊列の間隔ができるまでは同じマスの後続を隠す。
@@ -2485,14 +2511,19 @@ const Game = {
       claimedPathTiles.add(pathKey);
       const wx = (from.x + (to.x - from.x) * progress) * TS;
       const wy = (from.y + (to.y - from.y) * progress) * TS;
-      actors.push({ kind: 'follower', member, x: wx, y: wy, dir: to.dir || this.dir, sortY: wy + 31 });
+      const followerMoving = this.moving && (from.x !== to.x || from.y !== to.y);
+      actors.push({
+        kind: 'follower', member, x: wx, y: wy, dir: to.dir || this.dir,
+        fromDir: from.dir || to.dir || this.dir, moving: followerMoving,
+        motionT: progress, stepPolarity: i % 2 ? -1 : 1, sortY: wy + 31,
+      });
     });
     actors.push({ kind: 'player', sortY: this.py * TS + this.oy + 31 });
     actors.sort((a, b) => a.sortY - b.sortY);
     for (const actor of actors) {
-      if (actor.kind === 'player') this.drawFieldHero(g, pxx, pyy, frame);
+      if (actor.kind === 'player') this.drawFieldHero(g, pxx, pyy, frame, progress);
       else if (actor.kind === 'follower') this.drawFieldPartyMember(g, actor, camX, camY);
-      else this.drawFieldNpc(g, actor.n, camX, camY, frame, actor.x, actor.y);
+      else this.drawFieldNpc(g, actor.n, camX, camY, frame, actor.x, actor.y, actor.motionT, actor.fromDir);
     }
 
     // 木の梢や屋根を人物より後に再描画し、一枚絵でも遮蔽を成立させる。
@@ -2897,51 +2928,80 @@ const Game = {
     g.fillStyle = light; g.fillRect(0, 0, 512, 448);
   },
 
-  drawActorShadow(g, x, y, rx = 12, ry = 4) {
+  drawActorShadow(g, x, y, rx = 12, ry = 4, lift = 0, opacity = 1) {
+    // filter blur は人数分重なるとスマホで重い。二重の楕円で柔らかさを保つ。
+    const air = Math.max(0, Math.min(1, lift / 6));
+    const spread = 1 - air * .16;
     g.save();
-    g.fillStyle = 'rgba(5, 10, 15, .34)';
-    g.filter = 'blur(1.5px)';
-    g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = `rgba(5,10,15,${.12 * opacity})`;
+    g.beginPath(); g.ellipse(x, y + .5, rx * 1.14 * spread, ry * 1.25 * spread, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = `rgba(5,10,15,${(.25 - air * .065) * opacity})`;
+    g.beginPath(); g.ellipse(x, y, rx * spread, ry * spread, 0, 0, Math.PI * 2); g.fill();
     g.restore();
   },
 
-  drawFieldHero(g, pxx, pyy, fallbackFrame) {
+  drawFieldHero(g, pxx, pyy, fallbackFrame, progress = 1) {
     const footX = pxx + 16, footY = pyy + 31;
-    this.drawActorShadow(g, footX, footY, 12, 4);
-    const sheet = this.fieldCharacters && this.fieldCharacters.hero;
-    if (sheet && sheet.complete && sheet.naturalWidth) {
-      const cols = 6, rows = 4;
-      const cellW = sheet.naturalWidth / cols, cellH = sheet.naturalHeight / rows;
-      const row = { d: 0, l: 1, r: 2, u: 3 }[this.dir] ?? 0;
-      const col = this.moving ? Math.floor(this.walkAnimT * 12) % cols : 0;
-      const dw = 48, dh = 66;
-      g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH,
-        Math.round(footX - dw / 2), Math.round(footY - dh + 3), dw, dh);
-      return;
-    }
+    if (this.drawFieldCharacterSheet(g, 'hero', footX, footY, this.dir,
+      this.moving, progress, this.moveFromDir || this.dir, 1)) return;
     const spr = Art.get(`hero_${this.dir}${fallbackFrame}`);
-    if (spr) g.drawImage(spr, pxx, pyy - 2, 32, 32);
+    if (!spr) return;
+    const p = Math.max(0, Math.min(1, progress));
+    const envelope = this.moving ? Math.sin(Math.PI * p) : 0;
+    const phase = p * Math.PI * 2;
+    const lift = Math.abs(Math.sin(phase)) * .65 * envelope;
+    const lean = Math.sin(phase) * .012 * envelope;
+    this.drawActorShadow(g, footX, footY, 12, 4, lift);
+    g.save();
+    g.translate(footX, footY - lift);
+    g.rotate(lean);
+    g.drawImage(spr, -16, -31, 32, 32);
+    g.restore();
   },
 
-  drawFieldCharacterSheet(g, id, footX, footY, dir, moving = false, progress = 0) {
+  drawFieldCharacterSheet(g, id, footX, footY, dir, moving = false, progress = 0,
+    fromDir = dir, stepPolarity = 1) {
     const sheet = this.fieldCharacters && this.fieldCharacters[id];
     if (!sheet || !sheet.complete || !sheet.naturalWidth) return false;
     const cols = 6, rows = 4;
     const cellW = sheet.naturalWidth / cols, cellH = sheet.naturalHeight / rows;
-    const row = { d: 0, l: 1, r: 2, u: 3 }[dir] ?? 0;
-    const col = moving ? Math.floor(this.walkAnimT * 12) % cols : 0;
+    const rowsByDir = { d: 0, l: 1, r: 2, u: 3 };
+    const row = rowsByDir[dir] ?? 0;
+    const fromRow = rowsByDir[fromDir] ?? row;
+    const p = Math.max(0, Math.min(1, progress));
+    // 6コマを1マスの距離に固定し、足運びと地面の移動量を同期する。
+    const col = moving ? Math.min(cols - 1, Math.floor(p * cols)) : 0;
+    const envelope = moving ? Math.sin(Math.PI * p) : 0;
+    const phase = p * Math.PI * 2;
+    const stride = Math.sin(phase) * stepPolarity;
+    const lift = Math.abs(Math.sin(phase)) * .68 * envelope;
+    const lean = stride * .013 * envelope;
+    const squash = Math.cos(phase * 2) * .006 * envelope;
+    const isTurning = moving && fromRow !== row;
+    const turnT = isTurning ? this.fieldMoveEase(Math.min(1, p / .24)) : 1;
+    const turnSign = dir === 'l' ? -1 : dir === 'r' ? 1 : 0;
     const sizes = { rino: [47, 65], gald: [52, 68], fio: [47, 64] };
     const [dw, dh] = sizes[id] || [48, 66];
-    this.drawActorShadow(g, footX, footY, Math.max(10, dw * .24), 4);
-    g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH,
-      Math.round(footX - dw / 2), Math.round(footY - dh + 3), dw, dh);
+    this.drawActorShadow(g, footX, footY, Math.max(10, dw * .24), 4, lift);
+    g.save();
+    g.translate(footX, footY + 3 - lift);
+    g.rotate(lean + Math.sin(turnT * Math.PI) * turnSign * .015);
+    g.scale(1 - squash, 1 + squash);
+    if (isTurning && turnT < 1) {
+      g.globalAlpha = 1 - turnT;
+      g.drawImage(sheet, col * cellW, fromRow * cellH, cellW, cellH, -dw / 2, -dh, dw, dh);
+      g.globalAlpha = turnT;
+    }
+    g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH, -dw / 2, -dh, dw, dh);
+    g.restore();
     return true;
   },
 
   drawFieldPartyMember(g, actor, camX, camY) {
     const footX = actor.x + 16 - camX, footY = actor.y + 31 - camY;
     if (actor.member.kind === 'human') {
-      if (this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir, this.moving, this.moveT)) return;
+      if (this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir,
+        actor.moving, actor.motionT, actor.fromDir, actor.stepPolarity)) return;
       const human = HUMANS[actor.member.id];
       const fallback = human && (Art.get(`${human.spr}_${actor.dir}0`) || Art.get(`${human.spr}_0`) || Art.get(human.spr));
       if (fallback) {
@@ -2955,35 +3015,59 @@ const Game = {
     if (!spr) return;
     const large = !!def.big;
     const size = large ? 48 : 38;
-    const phase = this.walkAnimT * Math.PI * 6 + actor.x * .11;
+    const p = Math.max(0, Math.min(1, actor.motionT ?? 1));
+    const polarity = actor.stepPolarity || 1;
+    const phase = p * Math.PI * 2 + (polarity < 0 ? Math.PI : 0);
+    const envelope = actor.moving ? Math.sin(Math.PI * p) : 0;
     const species = actor.member.id;
-    let bob = Math.sin(this.animT * 2.2 + actor.x) * .45, sx = 1, sy = 1, lean = 0;
-    if (this.moving) {
+    const idleWave = Math.sin(this.animT * 2.2 + actor.x * .03);
+    let lift = -idleWave * .28 * (1 - envelope);
+    let sx = 1, sy = 1, lean = 0, shadowLift = 0, shadowOpacity = 1;
+    if (actor.moving) {
       if (/slime/.test(species)) {
-        const pulse = Math.sin(phase);
-        sx = 1 + pulse * .075; sy = 1 - pulse * .095; bob = -Math.abs(pulse) * 1.2;
+        const pulse = Math.sin(phase) * envelope;
+        sx = 1 + pulse * .065; sy = 1 - pulse * .08;
+        lift += Math.abs(Math.sin(phase)) * 1.05 * envelope; shadowLift = Math.max(0, lift);
       } else if (/bat/.test(species)) {
-        sy = .9 + Math.abs(Math.sin(phase * 1.35)) * .18; bob = Math.sin(phase * .55) * 1.7 - 2;
+        sy = 1 + Math.sin(phase * 2) * .045 * envelope;
+        lift = 2.3 + idleWave * .55 * (1 - envelope) + Math.sin(phase) * 1.2 * envelope;
+        shadowLift = 4; shadowOpacity = .76;
       } else if (/ghost|wraith|mist|aquan/.test(species)) {
-        bob = Math.sin(phase * .72) * 2; lean = Math.sin(phase * .5) * .025;
+        lift = 1.8 + idleWave * .6 * (1 - envelope) + Math.sin(phase) * 1.35 * envelope;
+        lean = Math.sin(phase) * .018 * envelope; shadowLift = 3.5; shadowOpacity = .8;
       } else if (/rock|machine/.test(species)) {
-        bob = -Math.abs(Math.sin(phase)) * 1.1; sx = 1 + Math.sin(phase) * .018;
+        lift += Math.abs(Math.sin(phase)) * .75 * envelope;
+        sx = 1 + Math.sin(phase) * .014 * envelope; shadowLift = lift;
       } else {
-        bob = -Math.abs(Math.sin(phase)) * 1.3; lean = Math.sin(phase) * .025;
+        lift += Math.abs(Math.sin(phase)) * 1.05 * envelope;
+        lean = Math.sin(phase) * .02 * envelope * polarity; shadowLift = lift;
       }
+    } else if (/bat/.test(species)) {
+      lift = 2.3 + idleWave * .55; shadowLift = 4; shadowOpacity = .76;
+    } else if (/ghost|wraith|mist|aquan/.test(species)) {
+      lift = 1.8 + idleWave * .6; shadowLift = 3.5; shadowOpacity = .8;
     }
-    this.drawActorShadow(g, footX, footY, large ? 17 : 12, large ? 5 : 3.5);
+    const oldFacing = actor.fromDir === 'l' ? -1 : 1;
+    const newFacing = actor.dir === 'l' ? -1 : 1;
+    const turning = actor.moving && oldFacing !== newFacing;
+    const turnT = turning ? this.fieldMoveEase(Math.min(1, p / .24)) : 1;
+    let facing = newFacing;
+    if (turning && turnT < .5) facing = oldFacing * Math.max(.12, 1 - turnT * 2);
+    else if (turning) facing = newFacing * Math.max(.12, (turnT - .5) * 2);
+    this.drawActorShadow(g, footX, footY, large ? 17 : 12, large ? 5 : 3.5,
+      shadowLift, shadowOpacity);
     g.save();
-    g.translate(Math.round(footX), Math.round(footY + 2));
+    g.translate(footX, footY + 2 - lift);
     g.rotate(lean);
-    g.scale(actor.dir === 'l' ? -sx : sx, sy);
-    g.drawImage(spr, -size / 2, -size + bob, size, size);
+    g.scale(facing * sx, sy);
+    g.drawImage(spr, -size / 2, -size, size, size);
     g.restore();
   },
 
-  drawFieldNpc(g, n, camX, camY, frame, worldX = n.x, worldY = n.y) {
+  drawFieldNpc(g, n, camX, camY, frame, worldX = n.x, worldY = n.y,
+    motionT = 1, fromDir = n.dir) {
     const TS = 32;
-    const nx = Math.round(worldX * TS - camX), ny = Math.round(worldY * TS - camY);
+    const nx = worldX * TS - camX, ny = worldY * TS - camY;
     const footX = nx + 16, footY = ny + 31;
     if (n.bossSpr) {
       const spr = Art.get(n.bossSpr);
@@ -2995,7 +3079,8 @@ const Game = {
     }
     if (!n.spr) return;
     if (this.fieldCharacters && this.fieldCharacters[n.spr]) {
-      if (this.drawFieldCharacterSheet(g, n.spr, footX, footY, n.dir || 'd', false, 0)) return;
+      if (this.drawFieldCharacterSheet(g, n.spr, footX, footY, n.dir || 'd',
+        !!n.npcMoving, motionT, fromDir || n.dir, 1)) return;
     }
     const npcSheet = this.npcDirectionSheets && this.npcDirectionSheets[n.spr];
     const npcSize = {
@@ -3005,26 +3090,48 @@ const Game = {
     if (npcSize && npcSheet && npcSheet.complete && npcSheet.naturalWidth) {
       const [dw, dh] = npcSize;
       const cellW = npcSheet.naturalWidth / 4, cellH = npcSheet.naturalHeight;
-      const col = { d: 0, l: 1, r: 2, u: 3 }[n.dir || 'd'] ?? 0;
-      const phase = n.npcMoving ? (n.npcMoveT || 0) * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
-      const lift = n.npcMoving ? Math.abs(Math.sin(phase)) * .75 : Math.sin(phase) * .18;
-      const step = n.npcMoving ? Math.sin(phase) * .55 : 0;
-      const squash = n.npcMoving ? Math.sin(phase * 2) * .006 : 0;
-      this.drawActorShadow(g, footX, footY, Math.max(9, dw * .24), 3.5);
+      const colsByDir = { d: 0, l: 1, r: 2, u: 3 };
+      const col = colsByDir[n.dir || 'd'] ?? 0;
+      const fromCol = colsByDir[fromDir || n.dir || 'd'] ?? col;
+      const p = Math.max(0, Math.min(1, motionT));
+      const phase = n.npcMoving ? p * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
+      const envelope = n.npcMoving ? Math.sin(Math.PI * p) : 0;
+      const stride = Math.sin(phase);
+      const lift = n.npcMoving ? Math.abs(stride) * .72 * envelope : Math.sin(phase) * .16;
+      const sideStep = n.npcMoving && (n.dir === 'u' || n.dir === 'd') ? stride * .22 * envelope : 0;
+      const lean = n.npcMoving ? stride * .016 * envelope : 0;
+      const squash = n.npcMoving ? Math.cos(phase * 2) * .006 * envelope : 0;
+      const isTurning = n.npcMoving && fromCol !== col;
+      const turnT = isTurning ? this.fieldMoveEase(Math.min(1, p / .28)) : 1;
+      this.drawActorShadow(g, footX, footY, Math.max(9, dw * .24), 3.5, Math.max(0, lift));
       g.save();
-      g.translate(Math.round(footX + step), Math.round(footY + 2));
+      g.translate(footX + sideStep, footY + 2 - lift);
+      g.rotate(lean);
       g.scale(1 - squash, 1 + squash);
-      g.drawImage(npcSheet, col * cellW, 0, cellW, cellH,
-        -dw / 2, -dh - lift, dw, dh);
+      if (isTurning && turnT < 1) {
+        g.globalAlpha = 1 - turnT;
+        g.drawImage(npcSheet, fromCol * cellW, 0, cellW, cellH, -dw / 2, -dh, dw, dh);
+        g.globalAlpha = turnT;
+      }
+      g.drawImage(npcSheet, col * cellW, 0, cellW, cellH, -dw / 2, -dh, dw, dh);
       g.restore();
       return;
     }
     // V4全身立ち絵は会話専用。フィールドでは同一スケールの生成スプライトを使う。
-    const walkFrame = n.npcMoving ? Math.floor((n.npcMoveT || 0) * 4) % 2 : frame;
+    const p = Math.max(0, Math.min(1, motionT));
+    const walkFrame = n.npcMoving ? Math.min(1, Math.floor(p * 2)) : frame;
     const spr = Art.get(`${n.spr}_${n.dir || 'd'}${walkFrame}`) || Art.get(`${n.spr}_${walkFrame}`) || Art.get(`${n.spr}_0`);
     if (spr) {
-      this.drawActorShadow(g, footX, footY, 10, 3.5);
-      g.drawImage(spr, nx, ny - 2, TS, TS);
+      const phase = p * Math.PI * 2;
+      const envelope = n.npcMoving ? Math.sin(Math.PI * p) : 0;
+      const lift = Math.abs(Math.sin(phase)) * .55 * envelope;
+      const lean = Math.sin(phase) * .012 * envelope;
+      this.drawActorShadow(g, footX, footY, 10, 3.5, lift);
+      g.save();
+      g.translate(footX, footY - lift);
+      g.rotate(lean);
+      g.drawImage(spr, -16, -31, TS, TS);
+      g.restore();
     }
   },
 
