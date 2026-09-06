@@ -132,8 +132,15 @@ const Battle = {
       this.enemies.push({
         spec: sp, name: m.name + suffix, hp: m.hp, maxhp: m.hp,
         atk: m.atk, def: m.def, agi: m.agi, sleep: 0, flash: 0, dead: false, defendTurn: false,
-        appearIndex: this.enemies.length,
+        appearIndex: this.enemies.length, displayHp: m.hp,
+        visualX: 256, targetX: 256, recoilT: 0, recoilDir: 1, attackT: 0,
+        deathT: -1, deathDuration: .42,
       });
+    }
+    for (let i = 0; i < this.enemies.length; i++) {
+      const x = this.enemyFormationX(i, this.enemies.length);
+      this.enemies[i].visualX = x;
+      this.enemies[i].targetX = x;
     }
     this.phase = 'intro';
     this.queue = [];
@@ -152,6 +159,8 @@ const Battle = {
     this.tameCandidate = null;
     this.choice = null; // {text, sel, yes, no}
     this.defeatedTameable = [];
+    // 仲間本体へ一時的な描画値を足さず、セーブデータを汚さない。
+    this.partyMotion = Game.party.map(m => ({ displayHp: m.hp, attackT: 0, hitT: 0 }));
     for (const m of Game.party) { m.sleep = 0; m.defend = false; m.atkBuff = 1; m.defBuff = 1; }
     const names = [...new Set(this.enemies.map(e => MONSTERS[e.spec].name))];
     this.push(names.length === 1 && this.enemies.length > 1
@@ -164,6 +173,97 @@ const Battle = {
 
   aliveEnemies() { return this.enemies.filter(e => !e.dead); },
   aliveParty() { return Game.party.filter(m => m.hp > 0); },
+
+  enemyFormationX(index, count) {
+    if (count <= 1) return 256;
+    const spacing = Math.min(118, 356 / (count - 1));
+    return 256 + (index - (count - 1) / 2) * spacing;
+  },
+
+  enemyFloats(e) {
+    const spr = (MONSTERS[e.spec].spr || '').toLowerCase();
+    // 明確に空中を飛ぶ種だけを上下させ、地上敵の足は接地線へ固定する。
+    return /bat|ghost|wraith|angel|seraph|mist/.test(`${e.spec} ${spr}`);
+  },
+
+  drawEnemyGraphic(g, e, spec, x, y, w, h) {
+    if (this.drawV6Enemy(g, e.spec, x, y, w, h)
+        || this.drawV5Enemy(g, e.spec, x, y, w, h)) return true;
+    const atlas = Game.monsterAtlas;
+    if (atlas && atlas.complete && atlas.naturalWidth) {
+      const cell = atlas.naturalWidth / 4, ai = this.atlasIndex(spec.spr);
+      const ax = (ai % 4) * cell, ay = Math.floor(ai / 4) * cell;
+      g.drawImage(atlas, ax, ay, cell, cell, x, y, w, h);
+      return true;
+    }
+    const spr = Art.get(spec.spr);
+    if (spr) { g.drawImage(spr, x, y, w, h); return true; }
+    return false;
+  },
+
+  startPartyAttack(member) {
+    const motion = this.partyMotion && this.partyMotion[Game.party.indexOf(member)];
+    if (motion) motion.attackT = .3;
+  },
+
+  startEnemyAttack(enemy) {
+    if (enemy && !enemy.dead) enemy.attackT = .36;
+  },
+
+  hitEnemy(enemy) {
+    if (!enemy) return;
+    enemy.flash = .22;
+    enemy.recoilT = .26;
+    enemy.recoilDir = enemy.visualX < 252 ? -1 : 1;
+  },
+
+  hitParty(member) {
+    const motion = this.partyMotion && this.partyMotion[Game.party.indexOf(member)];
+    if (motion) motion.hitT = .26;
+  },
+
+  defeatEnemy(enemy, fled = false) {
+    if (!enemy || enemy.dead) return false;
+    enemy.hp = Math.max(0, enemy.hp);
+    enemy.dead = true;
+    enemy.fled = fled;
+    enemy.deathT = 0;
+    enemy.deathDuration = fled ? .3 : .42;
+    if (!fled) this.hitEnemy(enemy);
+    return true;
+  },
+
+  keepMenuSelectionVisible(menu, maxRows = 6) {
+    if (!menu || !menu.list || !menu.list.length) return 0;
+    const maxStart = Math.max(0, menu.list.length - maxRows);
+    let start = Math.max(0, Math.min(maxStart, menu.scroll || 0));
+    if (menu.sel < start) start = menu.sel;
+    else if (menu.sel >= start + maxRows) start = menu.sel - maxRows + 1;
+    menu.scroll = Math.max(0, Math.min(maxStart, start));
+    return menu.scroll;
+  },
+
+  queueTapConfirm() {
+    if (typeof Input === 'undefined') return;
+    if (typeof Input.pulse === 'function') { Input.pulse('ok'); return; }
+    if (typeof Input.virtualDown !== 'function') return;
+    Input.virtualDown('ok');
+    setTimeout(() => Input.virtualUp('ok'), 0);
+  },
+
+  tapSelection(owner, index, maxRows = 6) {
+    if (!owner) return;
+    // 初回は選択だけ。同じ項目をもう一度タップした時だけ決定する。
+    if (owner.tapSel === index) { owner.tapSel = null; this.queueTapConfirm(); return; }
+    owner.sel = index;
+    owner.tapSel = index;
+    this.keepMenuSelectionVisible(owner, maxRows);
+    AudioSys.sfx('cursor');
+  },
+
+  addHitArea(x, y, w, h, onTap) {
+    if (typeof UI !== 'undefined' && typeof UI.hitArea === 'function') UI.hitArea(x, y, w, h, onTap);
+  },
 
   reservedItemCount(id) {
     return this.actions.filter(a => a.cmd === 'item' && a.item === id).length;
@@ -187,7 +287,32 @@ const Battle = {
     // 登場演出や行動中表示はゲーム進行を止めず、描画上だけ滑らかに補間する。
     this.visualTime = Math.min(30, (this.visualTime || 0) + Math.min(dt, .05));
     if (this.shake > 0) this.shake -= dt;
-    for (const e of this.enemies) if (e.flash > 0) e.flash -= dt;
+    const frameDt = Math.min(dt, .05);
+    const reducedMotion = !!Game.reducedMotion;
+    const alive = this.aliveEnemies();
+    const formationEase = reducedMotion ? 1 : 1 - Math.exp(-frameDt * 9);
+    const hpEase = reducedMotion ? 1 : 1 - Math.exp(-frameDt * 10);
+    for (let i = 0; i < alive.length; i++) alive[i].targetX = this.enemyFormationX(i, alive.length);
+    for (const e of this.enemies) {
+      if (e.flash > 0) e.flash = Math.max(0, e.flash - dt);
+      if (e.recoilT > 0) e.recoilT = Math.max(0, e.recoilT - dt);
+      if (e.attackT > 0) e.attackT = Math.max(0, e.attackT - dt);
+      if (e.dead && e.deathT >= 0) e.deathT += dt;
+      if (!e.dead) e.visualX += (e.targetX - e.visualX) * formationEase;
+      const hpTarget = Math.max(0, Math.min(e.maxhp, e.hp));
+      e.displayHp += (hpTarget - e.displayHp) * hpEase;
+      if (Math.abs(e.displayHp - hpTarget) < .05) e.displayHp = hpTarget;
+    }
+    if (!this.partyMotion) this.partyMotion = [];
+    for (let i = 0; i < Game.party.length; i++) {
+      const m = Game.party[i];
+      const motion = this.partyMotion[i] || (this.partyMotion[i] = { displayHp: m.hp, attackT: 0, hitT: 0 });
+      if (motion.attackT > 0) motion.attackT = Math.max(0, motion.attackT - dt);
+      if (motion.hitT > 0) motion.hitT = Math.max(0, motion.hitT - dt);
+      const hpTarget = Math.max(0, Math.min(m.maxhp, m.hp));
+      motion.displayHp += (hpTarget - motion.displayHp) * hpEase;
+      if (Math.abs(motion.displayHp - hpTarget) < .05) motion.displayHp = hpTarget;
+    }
     for (const fx of this.fx) fx.t += dt;
     this.fx = this.fx.filter(fx => fx.t < fx.duration);
 
@@ -246,7 +371,7 @@ const Battle = {
   handleInput() {
     if (this.choice) {
       if (Input.pressed('left') || Input.pressed('right') || Input.pressed('up') || Input.pressed('down')) {
-        this.choice.sel = 1 - this.choice.sel; AudioSys.sfx('cursor');
+        this.choice.sel = 1 - this.choice.sel; this.choice.tapSel = null; AudioSys.sfx('cursor');
       }
       if (Input.pressed('ok')) {
         AudioSys.sfx('ok');
@@ -266,8 +391,10 @@ const Battle = {
 
     if (menu.kind === 'targetE') {
       const alive = this.aliveEnemies();
-      if (Input.pressed('left') || Input.pressed('up')) { menu.sel = (menu.sel + alive.length - 1) % alive.length; AudioSys.sfx('cursor'); }
-      if (Input.pressed('right') || Input.pressed('down')) { menu.sel = (menu.sel + 1) % alive.length; AudioSys.sfx('cursor'); }
+      if (!alive.length) return;
+      if (menu.sel >= alive.length) menu.sel = alive.length - 1;
+      if (Input.pressed('left') || Input.pressed('up')) { menu.sel = (menu.sel + alive.length - 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
+      if (Input.pressed('right') || Input.pressed('down')) { menu.sel = (menu.sel + 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(alive[menu.sel]); }
       if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
@@ -275,15 +402,20 @@ const Battle = {
     if (menu.kind === 'targetA') {
       const targets = menu.list || Game.party;
       const n = targets.length;
-      if (Input.pressed('up') || Input.pressed('left')) { menu.sel = (menu.sel + n - 1) % n; AudioSys.sfx('cursor'); }
-      if (Input.pressed('down') || Input.pressed('right')) { menu.sel = (menu.sel + 1) % n; AudioSys.sfx('cursor'); }
+      if (!n) return;
+      if (Input.pressed('up') || Input.pressed('left')) { menu.sel = (menu.sel + n - 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
+      if (Input.pressed('down') || Input.pressed('right')) { menu.sel = (menu.sel + 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); }
       if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
 
-    if (Input.pressed('up')) { menu.sel = (menu.sel + listLen - 1) % listLen; AudioSys.sfx('cursor'); }
-    if (Input.pressed('down')) { menu.sel = (menu.sel + 1) % listLen; AudioSys.sfx('cursor'); }
+    if (!listLen) return;
+    const prev = Input.pressed('up') || (menu.kind === 'cmd' && Input.pressed('left'));
+    const next = Input.pressed('down') || (menu.kind === 'cmd' && Input.pressed('right'));
+    if (prev) { menu.sel = (menu.sel + listLen - 1) % listLen; menu.tapSel = null; AudioSys.sfx('cursor'); }
+    if (next) { menu.sel = (menu.sel + 1) % listLen; menu.tapSel = null; AudioSys.sfx('cursor'); }
+    if (menu.kind === 'spell' || menu.kind === 'item') this.keepMenuSelectionVisible(menu, 6);
 
     if (Input.pressed('cancel')) {
       if (menu.kind !== 'cmd') { AudioSys.sfx('cancel'); this.menu = { kind: 'cmd', sel: 0 }; }
@@ -309,7 +441,7 @@ const Battle = {
         case 1: { // じゅもん
           const list = member.spells.filter(s => SPELLS[s].kind !== 'field_warp');
           if (list.length === 0) { this.push(`${member.name}は じゅもんを つかえない!`); return; }
-          this.menu = { kind: 'spell', sel: 0, list, back: menu };
+          this.menu = { kind: 'spell', sel: 0, scroll: 0, list, back: menu };
           break;
         }
         case 2: // ぼうぎょ
@@ -319,7 +451,7 @@ const Battle = {
           // 先に選んだ仲間が予約した分を除き、このターンにまだ使える数だけを表示する。
           const list = this.battleItemList();
           if (list.length === 0) { this.push('つかえる どうぐが ない!'); return; }
-          this.menu = { kind: 'item', sel: 0, list, back: menu };
+          this.menu = { kind: 'item', sel: 0, scroll: 0, list, back: menu };
           break;
         }
         case 4: // にげる
@@ -484,11 +616,8 @@ const Battle = {
 
   effectAnchor(target) {
     if (target && target.enemy) {
-      const alive = this.aliveEnemies();
-      const i = Math.max(0, alive.indexOf(target.enemy));
-      const spec = MONSTERS[target.enemy.spec];
       return {
-        x: 256 + (i - (alive.length - 1) / 2) * (spec.boss ? 150 : 118),
+        x: Number.isFinite(target.enemy.visualX) ? target.enemy.visualX : 256,
         y: 190,
         side: 'enemy',
       };
@@ -519,7 +648,7 @@ const Battle = {
       case 'attack': {
         let t = a.target;
         if (t.dead) { const alive = this.aliveEnemies(); if (!alive.length) return; t = alive[0]; }
-        this.push(`${m.name}の こうげき!`);
+        this.push(`${m.name}の こうげき!`, () => this.startPartyAttack(m));
         const crit = Math.random() < (m.job === 'monk' ? 1 / 12 : 1 / 24);
         const atk = Chars.attackOf(m) * m.atkBuff;
         let dmg;
@@ -529,11 +658,13 @@ const Battle = {
         if (crit) this.push('かいしんの いちげき!!', () => AudioSys.sfx('crit'));
         if (dmg === 0) this.push('ミス! ダメージを あたえられない!');
         else this.push(`${t.name}に ${dmg}の ダメージ!`, () => {
-          AudioSys.sfx('hit'); t.flash = 0.3;
+          AudioSys.sfx('hit'); this.hitEnemy(t);
           this.addFx(crit ? 'critical' : 'slash', { enemy: t });
           this.addPopup({ enemy: t }, dmg, crit ? 'critical' : 'damage', crit ? 'かいしん!' : '');
           t.hp -= dmg;
-          if (t.hp <= 0) { t.dead = true; self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t); }
+          if (t.hp <= 0 && self.defeatEnemy(t)) {
+            self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t);
+          }
         });
         break;
       }
@@ -615,6 +746,7 @@ const Battle = {
     }
     m.mp -= sp.mp;
     this.push(`${m.name}は ${sp.name}を となえた!`, () => {
+      this.startPartyAttack(m);
       AudioSys.sfx(sp.fx);
       const fxKind = sp.kind === 'heal' || sp.kind === 'revive' ? 'heal' :
         a.spell.startsWith('hino') ? 'fire' : a.spell.startsWith('biri') ? 'lightning' :
@@ -634,8 +766,10 @@ const Battle = {
           if (!t) continue;
           const dmg = Math.max(1, Math.floor(dmgRoll() * (t.sleep > 0 ? 1.2 : 1)));
           this.push(`${t.name}に ${dmg}の ダメージ!`, () => {
-            t.flash = 0.3; this.addPopup({ enemy: t }, dmg, 'magic'); t.hp -= dmg;
-            if (t.hp <= 0 && !t.dead) { t.dead = true; self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t); }
+            this.hitEnemy(t); this.addPopup({ enemy: t }, dmg, 'magic'); t.hp -= dmg;
+            if (t.hp <= 0 && self.defeatEnemy(t)) {
+              self.push(`${t.name}を たおした!`, () => AudioSys.sfx('dead')); self.recordKill(t);
+            }
           });
         }
         break;
@@ -704,6 +838,7 @@ const Battle = {
       this.push(msg || `${t.name}に ${dmg}の ダメージ!`, () => {
         AudioSys.sfx('hit'); self.shake = 0.3; self.addFx('impact', { party: t });
         self.addPopup({ party: t }, dmg, 'hurt');
+        self.hitParty(t);
         t.hp = Math.max(0, t.hp - dmg);
         if (t.hp <= 0) { t.sleep = 0; self.push(`${t.name}は ちからつきた……`, () => AudioSys.sfx('dead')); self.checkWipe(); }
       });
@@ -713,8 +848,8 @@ const Battle = {
     if (act === 'attack' || act === 'doubleattack' || act === 'strongattack') {
       const times = act === 'doubleattack' ? 2 : 1;
       const mult = act === 'strongattack' ? 1.7 : 1;
-      if (act === 'strongattack') this.push(`${e.name}は ちからを ためて つよく きりつけた!`);
-      else this.push(`${e.name}の こうげき!`);
+      if (act === 'strongattack') this.push(`${e.name}は ちからを ためて つよく きりつけた!`, () => this.startEnemyAttack(e));
+      else this.push(`${e.name}の こうげき!`, () => this.startEnemyAttack(e));
       for (let i = 0; i < times; i++) {
         const t = i === 0 ? target : alive[Math.floor(Math.random() * alive.length)];
         if (t.hp <= 0) continue;
@@ -723,7 +858,7 @@ const Battle = {
         else dealDamage(t, dmg);
       }
     } else if (act === 'sleepattack') {
-      this.push(`${e.name}は ねむりの こなを まきちらした!`);
+      this.push(`${e.name}は ねむりの こなを まきちらした!`, () => this.startEnemyAttack(e));
       for (const t of alive) {
         if (Math.random() < 0.35 && t.sleep === 0) {
           t.sleep = 1 + Math.floor(Math.random() * 2);
@@ -731,7 +866,7 @@ const Battle = {
         }
       }
     } else if (act === 'poisonattack') {
-      this.push(`${e.name}は どくの キバで かみついた!`);
+      this.push(`${e.name}は どくの キバで かみついた!`, () => this.startEnemyAttack(e));
       const dmg = this.physDamage(e.atk, defOf(target), false);
       if (dmg > 0) dealDamage(target, dmg);
       if (Math.random() < 0.4 && !target.poison && target.hp > 0) {
@@ -748,10 +883,10 @@ const Battle = {
       this.push(`${e.name}は からだを まるめて みをまもっている。`);
       e.defendTurn = true;
     } else if (act === 'flee') {
-      this.push(`${e.name}は にげだした!`, () => { e.dead = true; e.fled = true; self.checkVictoryAfterQueue(); });
+      this.push(`${e.name}は にげだした!`, () => { self.defeatEnemy(e, true); self.checkVictoryAfterQueue(); });
     } else if (Array.isArray(act) && act[0] === 'spell') {
       const sp = SPELLS[act[1]];
-      this.push(`${e.name}は ${sp.name}を となえた!`, () => AudioSys.sfx(sp.fx));
+      this.push(`${e.name}は ${sp.name}を となえた!`, () => { this.startEnemyAttack(e); AudioSys.sfx(sp.fx); });
       if (sp.kind === 'atk') {
         const targets = sp.target === 'enemies' ? alive : [target];
         for (const t of targets) {
@@ -779,7 +914,7 @@ const Battle = {
         this.push(`${e.name}の こうげきりょくが あがった!`);
       }
     } else if (Array.isArray(act) && act[0] === 'breath') {
-      this.push(`${e.name}は ほのおを はいた!`);
+      this.push(`${e.name}は ほのおを はいた!`, () => this.startEnemyAttack(e));
       for (const t of alive) {
         if (t.hp <= 0) continue;
         const dmg = Math.max(1, Math.floor(act[1] * (0.85 + Math.random() * 0.3) / (t.defend ? 2 : 1)));
@@ -926,75 +1061,91 @@ const Battle = {
     }
 
     let sx = 0, sy = 0;
-    if (this.shake > 0) { sx = (Math.random() - 0.5) * 10; sy = (Math.random() - 0.5) * 8; }
+    if (this.shake > 0 && !Game.reducedMotion) { sx = (Math.random() - 0.5) * 10; sy = (Math.random() - 0.5) * 8; }
 
-    // 敵
+    // 敵。戦闘上は即座に退場させつつ、描画だけ短い余韻を残す。
+    const now = performance.now();
+    const reducedMotion = !!Game.reducedMotion;
     const alive = this.aliveEnemies();
-    const n = alive.length;
-    for (let i = 0; i < n; i++) {
-      const e = alive[i];
+    const visibleEnemies = this.enemies.filter(e => !e.dead || e.deathT < e.deathDuration);
+    const baseY = 272;
+    for (const e of visibleEnemies) {
       const spec = MONSTERS[e.spec];
-      const spr = Art.get(spec.spr);
       const sw = spec.boss ? 174 : 108, sh = spec.boss ? 174 : 108;
-      const cx = W / 2 + (i - (n - 1) / 2) * (spec.boss ? 150 : 118);
-      const baseY = H * 0.62;
-      const bob = Math.sin(performance.now() / 400 + i * 1.7) * 3;
+      const aliveIndex = alive.indexOf(e);
+      const deathP = e.dead ? Math.max(0, Math.min(1, e.deathT / e.deathDuration)) : 0;
       const enterRaw = Math.max(0, Math.min(1, ((this.visualTime || 0) - e.appearIndex * .1) / (spec.boss ? .42 : .34)));
-      const enter = 1 - Math.pow(1 - enterRaw, 3);
-      const enterScale = .72 + enter * .28;
-      const drawW = sw * enterScale, drawH = sh * enterScale;
-      const x = cx - drawW / 2 + sx, y = baseY - drawH + bob + sy;
+      const enter = reducedMotion ? 1 : 1 - Math.pow(1 - enterRaw, 3);
+      const enterScale = reducedMotion ? 1 : .72 + enter * .28;
+      const attackRemain = e.attackT > 0 ? e.attackT / .36 : 0;
+      const lunge = reducedMotion ? 0 : Math.sin((1 - attackRemain) * Math.PI) * 11 * (e.attackT > 0 ? 1 : 0);
+      const attackScale = reducedMotion ? 1 : 1 + Math.sin((1 - attackRemain) * Math.PI) * .055 * (e.attackT > 0 ? 1 : 0);
+      const recoilRemain = e.recoilT > 0 ? e.recoilT / .26 : 0;
+      const recoil = reducedMotion ? 0 : Math.sin((1 - recoilRemain) * Math.PI * 2.5) * 8 * recoilRemain * e.recoilDir;
+      const bob = !reducedMotion && this.enemyFloats(e) && !e.dead ? Math.sin(now / 380 + e.appearIndex * 1.7) * 3 : 0;
+      const deathScale = e.fled ? 1 : 1 - deathP * .1;
+      const drawW = sw * enterScale * attackScale * deathScale;
+      const drawH = sh * enterScale * attackScale * deathScale;
+      const fleeShift = !reducedMotion && e.fled ? deathP * (e.visualX < 256 ? -58 : 58) : 0;
+      const fall = !reducedMotion && e.dead && !e.fled ? deathP * 11 : 0;
+      const cx = e.visualX + recoil + fleeShift;
+      const x = cx - drawW / 2 + sx;
+      const y = baseY - drawH + bob + lunge + fall + sy;
+      const fade = enter * (e.dead ? Math.pow(1 - deathP, 1.6) : 1);
+      const targetMenu = this.menu && this.menu.kind === 'targetE' ? this.menu : null;
+      const selected = !!targetMenu && aliveIndex >= 0 && targetMenu.sel === aliveIndex;
+      const pulse = reducedMotion ? .55 : .5 + .5 * Math.sin(now / 120);
+
       g.save();
-      g.globalAlpha = enter;
-      // 解決中の行動者だけに軽い照準リングを出し、誰の手番かを一目で示す。
-      if (this.phase === 'resolve' && this.activeActor && this.activeActor.enemy === e) {
-        const pulse = .5 + .5 * Math.sin(performance.now() / 105);
+      g.globalAlpha = fade;
+      if (selected) {
+        g.fillStyle = `rgba(71,224,238,${.08 + pulse * .08})`;
+        g.beginPath(); g.ellipse(cx + sx, baseY - drawH * .46 + sy, drawW * .58, drawH * .58, 0, 0, Math.PI * 2); g.fill();
+        g.strokeStyle = '#70ecf4'; g.lineWidth = 2; g.shadowColor = '#50d9ed'; g.shadowBlur = 10;
+        g.beginPath(); g.ellipse(cx + sx, baseY - drawH * .46 + sy, drawW * (.54 + pulse * .025), drawH * (.54 + pulse * .025), 0, 0, Math.PI * 2); g.stroke();
+        g.shadowBlur = 0;
+      } else if (this.phase === 'resolve' && this.activeActor && this.activeActor.enemy === e) {
         g.strokeStyle = '#ffd36a'; g.lineWidth = 2;
-        g.globalAlpha = enter * (.52 + pulse * .34);
-        g.beginPath();
-        g.ellipse(cx + sx, baseY - drawH * .48 + sy, drawW * (.54 + pulse * .03), drawH * (.54 + pulse * .03), 0, 0, Math.PI * 2);
-        g.stroke();
-        g.globalAlpha = enter;
+        g.globalAlpha = fade * (.52 + pulse * .34);
+        g.beginPath(); g.ellipse(cx + sx, baseY - drawH * .48 + sy, drawW * .55, drawH * .55, 0, 0, Math.PI * 2); g.stroke();
+        g.globalAlpha = fade;
       }
-      // 接地影
-      g.fillStyle = 'rgba(0,0,0,0.32)';
-      g.beginPath();
-      g.ellipse(cx + sx, baseY - 3 + sy, sw * 0.34 * enterScale, 6 * enterScale, 0, 0, Math.PI * 2);
-      g.fill();
-      if (!this.drawV6Enemy(g, e.spec, x, y, drawW, drawH)
-          && !this.drawV5Enemy(g, e.spec, x, y, drawW, drawH)) {
-        const atlas = Game.monsterAtlas;
-        if (atlas && atlas.complete && atlas.naturalWidth) {
-          const cell = atlas.naturalWidth / 4, ai = this.atlasIndex(spec.spr);
-          const ax = (ai % 4) * cell, ay = Math.floor(ai / 4) * cell;
-          g.drawImage(atlas, ax, ay, cell, cell, x, y, drawW, drawH);
-        } else if (spr) g.drawImage(spr, x, y, drawW, drawH);
-      }
-      if (e.flash > 0 && Math.floor(e.flash * 20) % 2 === 0) {
+      // 影は接地線に固定する。飛行敵の本体だけが影の上で浮遊する。
+      g.fillStyle = e.fled ? 'rgba(0,0,0,.18)' : 'rgba(0,0,0,.34)';
+      g.beginPath(); g.ellipse(e.visualX + sx, baseY - 3 + sy, sw * .34 * enterScale * (1 - deathP * .45), 6 * enterScale, 0, 0, Math.PI * 2); g.fill();
+      g.globalAlpha = fade;
+      this.drawEnemyGraphic(g, e, spec, x, y, drawW, drawH);
+      // 同じ透過スプライトを明るく再描画し、四角い白幕を出さない。
+      if (e.flash > 0 && Math.floor(e.flash * 28) % 2 === 0) {
         g.save();
-        g.globalCompositeOperation = 'source-atop';
-        g.globalAlpha = 0.7;
-        g.fillStyle = '#fff';
-        g.fillRect(x, y, drawW, drawH);
+        g.globalAlpha = fade * Math.min(.72, e.flash * 4.2);
+        g.globalCompositeOperation = 'screen';
+        if ('filter' in g) g.filter = 'brightness(2.7) saturate(.2)';
+        this.drawEnemyGraphic(g, e, spec, x, y, drawW, drawH);
         g.restore();
       }
-      // 敵の名前と残りHPを常時表示し、攻撃の成果と危険度を把握しやすくする。
-      const hpW = spec.boss ? 124 : 82;
+
+      const hpW = spec.boss ? 132 : 84;
       const hpX = cx - hpW / 2 + sx;
-      const hpY = y - 14;
-      const hpRate = Math.max(0, e.hp / e.maxhp);
+      const hpY = spec.boss ? Math.max(101, y - 14) : y - 14;
+      const hpRate = Math.max(0, Math.min(1, e.displayHp / e.maxhp));
       const hpCol = hpRate > .5 ? '#62dd82' : hpRate > .2 ? '#ffd45c' : '#ff6b65';
+      g.globalAlpha = fade;
       UI.text(g, e.name, cx - UI.measure(g, e.name, spec.boss ? 14 : 12) / 2 + sx, hpY - 6, '#f7f0dc', spec.boss ? 14 : 12);
-      g.fillStyle = 'rgba(2,6,12,.82)'; g.fillRect(hpX - 2, hpY - 2, hpW + 4, 9);
+      g.fillStyle = 'rgba(2,6,12,.84)'; g.fillRect(hpX - 2, hpY - 2, hpW + 4, 9);
       g.fillStyle = '#27313d'; g.fillRect(hpX, hpY, hpW, 5);
       g.fillStyle = hpCol; g.fillRect(hpX, hpY, Math.ceil(hpW * hpRate), 5);
       if (e.sleep > 0) UI.text(g, 'zzz', hpX + hpW + 5, hpY + 5, '#a8d8f8', 12);
       else if (e.defendTurn) UI.text(g, 'まもり', hpX + hpW + 5, hpY + 5, '#ffe49a', 11);
-      // ターゲットカーソル
-      if (this.menu && this.menu.kind === 'targetE' && this.menu.sel === i) {
-        UI.cursor(g, cx - 8 + sx, hpY - 31, 'down');
-      }
+      if (selected) UI.cursor(g, cx - 6 + sx, Math.max(91, hpY - 31), 'down');
       g.restore();
+
+      if (targetMenu && aliveIndex >= 0 && this.queue.length === 0) {
+        const hitX = Math.max(0, x - 8), hitY = Math.max(90, y - 30);
+        this.addHitArea(hitX, hitY, Math.min(W - hitX, drawW + 16), Math.max(36, baseY - hitY + 9), () => {
+          if (this.menu === targetMenu) this.tapSelection(targetMenu, aliveIndex);
+        });
+      }
     }
 
     // パーティーステータス
@@ -1003,71 +1154,105 @@ const Battle = {
     // パーティー対象のヒット演出や数値がステータス窓に隠れない順序で重ねる。
     this.drawEffects(g, sx, sy);
 
-    // コマンドメニュー
-    if (this.phase === 'command' && this.menu) {
+    // コマンドメニュー。敵の接地線より下へまとめ、戦場を隠さない。
+    if (this.phase === 'command' && this.menu && this.queue.length === 0 && !this.choice) {
       const m = this.menu;
       if (m.kind === 'cmd') {
         const member = Game.party[this.memberIdx];
-        UI.window(g, 8, 258, 150, 26);
-        UI.text(g, member.name, 20, 276, '#ffd', 15);
-        UI.window(g, 8, 288, 150, 118);
         const cmds = ['たたかう', 'じゅもん', 'ぼうぎょ', 'どうぐ', 'にげる'];
+        const descs = ['ぶきで てきを こうげき', 'MPをつかって じゅもん', 'うけるダメージを へらす', 'もちものを つかう', 'せんとうから にげる'];
+        UI.window(g, 8, 300, 496, 140);
+        UI.text(g, `${member.name}の コマンド`, 26, 326, '#ffe5a0', 15);
+        UI.text(g, '← → / ↑ ↓', 380, 326, '#8fb8c7', 11);
         for (let i = 0; i < cmds.length; i++) {
-          UI.text(g, cmds[i], 40, 312 + i * 19, i === m.sel ? '#fff' : '#bbb', 15);
+          const cellX = 18 + i * 97, selected = i === m.sel;
+          if (selected) {
+            if (UI.selection) UI.selection(g, cellX, 340, 91, 52, 'battle-command');
+            else { g.fillStyle = 'rgba(71,211,229,.16)'; g.fillRect(cellX, 340, 91, 52); }
+          }
+          const textX = cellX + (91 - UI.measure(g, cmds[i], 14)) / 2;
+          UI.text(g, cmds[i], textX, 371, selected ? '#fff' : '#b9c7cc', 14);
+          this.addHitArea(cellX, 336, 91, 62, () => { if (this.menu === m) this.tapSelection(m, i); });
         }
-        UI.cursor(g, 22, 300 + m.sel * 19, 'right');
-      } else if (m.kind === 'spell') {
-        UI.window(g, 8, 258, 240, 148);
-        for (let i = 0; i < m.list.length; i++) {
-          const sp = SPELLS[m.list[i]];
-          UI.text(g, sp.name, 40, 282 + i * 19, i === m.sel ? '#fff' : '#bbb', 15);
-          UI.text(g, String(sp.mp), 210, 282 + i * 19, '#8cf', 14);
+        UI.text(g, descs[m.sel], 26, 420, '#d8e4e6', 13);
+      } else if (m.kind === 'spell' || m.kind === 'item') {
+        const isSpell = m.kind === 'spell';
+        const start = this.keepMenuSelectionVisible(m, 6);
+        const end = Math.min(m.list.length, start + 6);
+        UI.window(g, 8, 294, 300, 146);
+        UI.window(g, 312, 294, 192, 92);
+        UI.window(g, 312, 390, 192, 50);
+        for (let i = start; i < end; i++) {
+          const row = i - start, rowY = 306 + row * 20, selected = i === m.sel;
+          const entry = isSpell ? SPELLS[m.list[i]] : ITEMS[m.list[i].id];
+          if (selected) {
+            if (UI.selection) UI.selection(g, 17, rowY, 282, 19, `battle-${m.kind}`);
+            else { g.fillStyle = 'rgba(71,211,229,.15)'; g.fillRect(17, rowY, 282, 19); }
+          }
+          UI.text(g, entry.name, 39, rowY + 16, selected ? '#fff' : '#bdc9cd', 14);
+          UI.text(g, isSpell ? `MP ${entry.mp}` : `×${m.list[i].n}`, 238, rowY + 16, isSpell ? '#7edcf3' : '#f1d482', 12);
+          if (selected) UI.cursor(g, 22, rowY + 4, 'right');
+          this.addHitArea(15, rowY - 1, 286, 21, () => { if (this.menu === m) this.tapSelection(m, i, 6); });
         }
-        UI.cursor(g, 22, 270 + m.sel * 19, 'right');
-        const sp = SPELLS[m.list[m.sel]];
-        UI.window(g, 252, 258, 252, 44);
-        UI.text(g, sp.desc, 264, 284, '#dde', 13);
-      } else if (m.kind === 'item') {
-        UI.window(g, 8, 258, 260, 148);
-        for (let i = 0; i < Math.min(7, m.list.length); i++) {
-          const it = m.list[i];
-          UI.text(g, ITEMS[it.id].name, 40, 282 + i * 19, i === m.sel ? '#fff' : '#bbb', 15);
-          UI.text(g, `×${it.n}`, 220, 282 + i * 19, '#8cf', 14);
+        if (start > 0) UI.text(g, '▲', 286, 309, '#6fe1ef', 10);
+        if (end < m.list.length) UI.text(g, '▼', 286, 433, '#6fe1ef', 10);
+        const selectedEntry = isSpell ? SPELLS[m.list[m.sel]] : ITEMS[m.list[m.sel].id];
+        UI.text(g, isSpell ? 'じゅもん' : 'どうぐ', 328, 319, '#ffe2a0', 13);
+        UI.textWrap(g, selectedEntry.desc, 328, 342, 160, '#d7e2e5', 12, 16, 3);
+        UI.text(g, `${m.sel + 1} / ${m.list.length}`, 328, 418, '#8fb8c7', 12);
+        if (isSpell) UI.text(g, `のこり MP ${Game.party[this.memberIdx].mp}`, 405, 418, '#78d8ef', 11);
+      } else if (m.kind === 'targetE') {
+        UI.window(g, 8, 350, 496, 90);
+        UI.text(g, 'こうげきする てきを えらぶ', 26, 375, '#ffe2a0', 14);
+        const targets = this.aliveEnemies(), cellW = Math.floor(468 / Math.max(1, targets.length));
+        for (let i = 0; i < targets.length; i++) {
+          const cellX = 22 + i * cellW, selected = i === m.sel;
+          if (selected) {
+            if (UI.selection) UI.selection(g, cellX, 386, cellW - 6, 38, 'battle-enemy');
+            else { g.fillStyle = 'rgba(71,211,229,.15)'; g.fillRect(cellX, 386, cellW - 6, 38); }
+          }
+          UI.text(g, targets[i].name, cellX + 15, 411, selected ? '#fff' : '#bdc9cd', 13);
+          this.addHitArea(cellX, 382, cellW - 6, 47, () => { if (this.menu === m) this.tapSelection(m, i); });
         }
-        UI.cursor(g, 22, 270 + m.sel * 19, 'right');
       } else if (m.kind === 'targetA') {
         const targets = m.list || Game.party;
-        UI.window(g, 8, 258, 200, 30 + targets.length * 19);
+        UI.window(g, 8, 300, 496, 140);
+        UI.text(g, 'たいしょうの なかまを えらぶ', 26, 326, '#ffe2a0', 14);
         for (let i = 0; i < targets.length; i++) {
-          const p = targets[i];
-          UI.text(g, `${p.name}  HP${p.hp}`, 40, 282 + i * 19, i === m.sel ? '#fff' : '#bbb', 15);
+          const p = targets[i], col = i % 2, row = Math.floor(i / 2);
+          const cellX = 20 + col * 242, cellY = 340 + row * 43, selected = i === m.sel;
+          if (selected) {
+            if (UI.selection) UI.selection(g, cellX, cellY, 230, 37, 'battle-ally');
+            else { g.fillStyle = 'rgba(71,211,229,.15)'; g.fillRect(cellX, cellY, 230, 37); }
+          }
+          UI.text(g, p.name, cellX + 22, cellY + 24, selected ? '#fff' : '#bdc9cd', 14);
+          UI.text(g, `HP ${p.hp}/${p.maxhp}`, cellX + 112, cellY + 24, p.hp > 0 ? '#9eddb2' : '#ff837e', 12);
+          this.addHitArea(cellX, cellY - 3, 230, 42, () => { if (this.menu === m) this.tapSelection(m, i); });
         }
-        UI.cursor(g, 22, 270 + m.sel * 19, 'right');
       }
     }
 
     // メッセージ
     if (this.queue.length > 0 && this.queue[0].text) {
-      UI.window(g, 8, 336, 496, 104);
-      UI.textWrap(g, this.queue[0].text, 26, 366, 460, '#fff', 16, 22);
+      UI.window(g, 8, 314, 496, 126);
+      UI.textWrap(g, this.queue[0].text, 26, 346, 460, '#fff', 16, 22);
     }
 
     // 選択肢
     if (this.choice) {
-      UI.window(g, 8, 310, 496, 92);
+      UI.window(g, 8, 288, 496, 152);
       const lines = this.choice.text.split('\n');
-      for (let i = 0; i < lines.length; i++) UI.text(g, lines[i], 26, 336 + i * 20, '#fff', 15);
-      UI.window(g, 370, 350, 120, 76);
-      UI.text(g, 'はい', 404, 378, this.choice.sel === 0 ? '#fff' : '#bbb', 15);
-      UI.text(g, 'いいえ', 404, 400, this.choice.sel === 1 ? '#fff' : '#bbb', 15);
-      UI.cursor(g, 386, 366 + this.choice.sel * 22, 'right');
-    }
-
-    function shade(hex, f) {
-      const r = parseInt(hex.slice(1, 3), 16) * f | 0;
-      const gg = parseInt(hex.slice(3, 5), 16) * f | 0;
-      const b = parseInt(hex.slice(5, 7), 16) * f | 0;
-      return `rgb(${r},${gg},${b})`;
+      for (let i = 0; i < lines.length; i++) UI.text(g, lines[i], 26, 316 + i * 20, '#fff', 15);
+      for (let i = 0; i < 2; i++) {
+        const x = 264 + i * 112, selected = this.choice.sel === i;
+        if (selected) {
+          if (UI.selection) UI.selection(g, x, 381, 102, 42, 'battle-choice');
+          else { g.fillStyle = 'rgba(71,211,229,.16)'; g.fillRect(x, 381, 102, 42); }
+        }
+        UI.text(g, i === 0 ? 'はい' : 'いいえ', x + 34, 408, selected ? '#fff' : '#bbb', 15);
+        const choice = this.choice;
+        this.addHitArea(x, 376, 102, 52, () => { if (this.choice === choice) this.tapSelection(choice, i); });
+      }
     }
   },
 
@@ -1077,15 +1262,28 @@ const Battle = {
     for (let i = 0; i < n; i++) {
       const m = Game.party[i];
       const x = 8 + i * (w + 6);
-      UI.window(g, x, 8, w, 74);
+      const motion = this.partyMotion && this.partyMotion[i] || { displayHp: m.hp, attackT: 0, hitT: 0 };
+      const reducedMotion = !!Game.reducedMotion;
+      const attackRemain = motion.attackT > 0 ? motion.attackT / .3 : 0;
+      const attackShift = reducedMotion ? 0 : Math.sin((1 - attackRemain) * Math.PI) * 4 * (motion.attackT > 0 ? 1 : 0);
+      const hitRemain = motion.hitT > 0 ? motion.hitT / .26 : 0;
+      const hitShift = reducedMotion ? 0 : Math.sin((1 - hitRemain) * Math.PI * 3) * 3 * hitRemain;
+      const targetMenu = this.menu && this.menu.kind === 'targetA' ? this.menu : null;
+      const targets = targetMenu ? targetMenu.list || Game.party : null;
+      const targetIndex = targets ? targets.indexOf(m) : -1;
+      const targeted = targetIndex >= 0 && targetMenu.sel === targetIndex;
+      g.save();
+      g.translate(hitShift, attackShift);
+      UI.window(g, x, 8, w, 80);
       const choosing = this.phase === 'command' && this.memberIdx === i;
       const acting = this.phase === 'resolve' && this.activeActor && this.activeActor.party === m;
-      if (choosing || acting) {
-        const pulse = .5 + .5 * Math.sin(performance.now() / 110);
-        g.fillStyle = acting ? `rgba(83,221,255,${.06 + pulse * .07})` : 'rgba(255,229,138,.07)';
-        g.fillRect(x + 7, 15, w - 14, 59);
-        g.strokeStyle = acting ? '#6fe6ff' : '#ffe58a'; g.lineWidth = acting ? 2.5 : 2;
-        g.beginPath(); g.roundRect(x + 2, 10, w - 4, 70, 5); g.stroke();
+      if (choosing || acting || targeted) {
+        const pulse = reducedMotion ? .55 : .5 + .5 * Math.sin(performance.now() / 110);
+        const accent = targeted || acting ? '#6fe6ff' : '#ffe58a';
+        g.fillStyle = targeted ? `rgba(71,224,238,${.1 + pulse * .08})` : acting ? `rgba(83,221,255,${.06 + pulse * .07})` : 'rgba(255,229,138,.07)';
+        g.fillRect(x + 7, 15, w - 14, 65);
+        g.strokeStyle = accent; g.lineWidth = targeted || acting ? 2.5 : 2;
+        g.beginPath(); g.roundRect(x + 2, 10, w - 4, 76, 5); g.stroke();
         if (acting) {
           g.fillStyle = '#bff6ff';
           g.fillRect(x + 12, 11, Math.floor((w - 24) * (.45 + pulse * .55)), 2);
@@ -1096,31 +1294,40 @@ const Battle = {
       const heroCell = m.kind === 'human' ? { hero: 0, rino: 1, gald: 2, fio: 3 }[m.id] : undefined;
       if (heroCell !== undefined && partyAtlas && partyAtlas.complete && partyAtlas.naturalWidth) {
         const cw = partyAtlas.naturalWidth / 4;
-        g.save(); g.beginPath(); g.roundRect(x + 7, 16, 32, 38, 4); g.clip();
+        g.save(); g.beginPath(); g.roundRect(x + 7, 16, 32, 39, 4); g.clip();
         g.drawImage(partyAtlas, heroCell * cw + cw * .13, 0, cw * .74, partyAtlas.naturalHeight * .74,
           x + 5, 14, 36, 43); g.restore();
       } else {
         const sprName = m.kind === 'human' ? HUMANS[m.id].spr : MONSTERS[m.id].spr;
         const icon = Art.get(`${sprName}_0`) || Art.get(`${sprName}_d0`) || Art.get(sprName);
-        if (icon) g.drawImage(icon, x + 8, 18, 30, 30);
+        if (icon) g.drawImage(icon, x + 8, 18, 30, 32);
       }
-      UI.text(g, m.name, x + 40, 28, col, 13);
-      UI.text(g, `HP ${m.hp}/${m.maxhp}`, x + 40, 47, col, 11);
-      UI.text(g, `MP ${m.mp}/${m.maxmp}`, x + 40, 64, '#8cf', 11);
-      const hpRate = Math.max(0, m.hp / m.maxhp);
-      g.fillStyle = '#27313d'; g.fillRect(x + 8, 75, w - 16, 4);
+      UI.text(g, m.name, x + 42, 29, col, 13);
+      UI.text(g, `HP ${m.hp}/${m.maxhp}`, x + 42, 48, col, 10);
+      UI.text(g, `MP ${m.mp}/${m.maxmp}`, x + 42, 65, '#8cdcf4', 10);
+      const hpRate = Math.max(0, Math.min(1, motion.displayHp / m.maxhp));
+      g.fillStyle = '#27313d'; g.fillRect(x + 8, 74, w - 16, 4);
       g.fillStyle = hpRate > .5 ? '#62dd82' : hpRate > .2 ? '#ffd45c' : '#ff6b65';
-      g.fillRect(x + 8, 75, Math.ceil((w - 16) * hpRate), 4);
-      if (m.sleep > 0) UI.text(g, 'ねむり', x + 66, 28, '#a8d8f8', 11);
-      if (m.poison) UI.text(g, 'どく', x + 74, 28, '#c8f', 11);
+      g.fillRect(x + 8, 74, Math.ceil((w - 16) * hpRate), 4);
+      g.fillStyle = '#27313d'; g.fillRect(x + 8, 81, w - 16, 3);
+      g.fillStyle = '#71c9e2';
+      g.fillRect(x + 8, 81, (w - 16) * Math.max(0, Math.min(1, m.mp / Math.max(1, m.maxmp))), 3);
+      const state = m.hp <= 0 ? ['ダウン', '#ff837e'] : m.sleep > 0 ? ['ねむり', '#a8d8f8'] : m.poison ? ['どく', '#d9a1ff'] : null;
+      if (state) {
+        g.fillStyle = 'rgba(3,8,17,.82)'; g.fillRect(x + 7, 56, 34, 16);
+        UI.text(g, state[0], x + 10, 68, state[1], 9);
+      }
+      g.restore();
+      if (targetMenu && targetIndex >= 0 && this.queue.length === 0) {
+        this.addHitArea(x, 7, w, 82, () => { if (this.menu === targetMenu) this.tapSelection(targetMenu, targetIndex); });
+      }
     }
   },
 
   drawEffects(g, sx, sy) {
     if (!this.fx || !this.fx.length) return;
     const enemyPoint = target => {
-      const alive = this.aliveEnemies(), i = Math.max(0, alive.indexOf(target));
-      return { x: 256 + (i - (alive.length - 1) / 2) * (MONSTERS[target.spec].boss ? 150 : 118) + sx, y: 190 + sy };
+      return { x: (Number.isFinite(target.visualX) ? target.visualX : 256) + sx, y: 190 + sy };
     };
     const partyPoint = target => ({ x: 36 + Math.max(0, Game.party.indexOf(target)) * 124, y: 60 });
     for (const fx of this.fx) {

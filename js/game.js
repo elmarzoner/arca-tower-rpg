@@ -10,6 +10,10 @@ const Input = (() => {
   // 素早いタップが描画フレームの間で完結しても失われないよう、
   // 仮想ボタンの押下をゲーム側が読むまで短時間保持する。
   const virtualPressed = new Map();
+  const directions = new Set(['up', 'down', 'left', 'right']);
+  const repeatAt = new Map();
+  let inputContext = null;
+  const armRepeat = k => { if (directions.has(k)) repeatAt.set(k, performance.now() + 360); };
   const MAP = {
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
     w: 'up', s: 'down', a: 'left', d: 'right',
@@ -17,19 +21,21 @@ const Input = (() => {
     x: 'cancel', X: 'cancel', Escape: 'cancel',
   };
   window.addEventListener('keydown', e => {
+    // ネイティブの操作ガイドではEscやSpaceをフォーム本来の操作に渡す。
+    if (document.getElementById('help-panel')?.open) return;
     const k = MAP[e.key];
     if (k) {
       e.preventDefault();
-      if (!held.has(k)) pressed.add(k);
+      if (!held.has(k)) { pressed.add(k); armRepeat(k); }
       held.add(k);
       AudioSys.ensureCtx();
     }
   });
   window.addEventListener('keyup', e => {
     const k = MAP[e.key];
-    if (k) held.delete(k);
+    if (k) { held.delete(k); repeatAt.delete(k); }
   });
-  window.addEventListener('blur', () => { held.clear(); virtualPressed.clear(); });
+  window.addEventListener('blur', () => { held.clear(); pressed.clear(); virtualPressed.clear(); repeatAt.clear(); });
   const api = {
     held: k => held.has(k),
     pressed(k) {
@@ -40,8 +46,28 @@ const Input = (() => {
       return expires >= performance.now();
     },
     endFrame: () => pressed.clear(),
+    beginFrame(context, canNavigate) {
+      if (inputContext !== context) {
+        if (inputContext !== null) {
+          for (const k of directions) { pressed.delete(k); virtualPressed.delete(k); }
+          repeatAt.clear();
+        }
+        inputContext = context;
+      }
+      if (!canNavigate) return;
+      const now = performance.now();
+      for (const [k, due] of repeatAt) {
+        if (held.has(k) && now >= due) {
+          virtualPressed.set(k, now + 140);
+          repeatAt.set(k, now + 120);
+        }
+      }
+    },
+    clear() { held.clear(); pressed.clear(); virtualPressed.clear(); repeatAt.clear(); },
+    pulse(k) { virtualPressed.set(k, performance.now() + 180); },
     virtualDown(k) {
       if (!held.has(k)) virtualPressed.set(k, performance.now() + 500);
+      if (!held.has(k)) armRepeat(k);
       held.add(k);
       AudioSys.ensureCtx();
     },
@@ -49,11 +75,12 @@ const Input = (() => {
     // メニュー・店・戦闘はpressedを読むため、同じ操作面を両方で使える。
     virtualHold(k) {
       if (!held.has(k) && Game.state !== 'field') virtualPressed.set(k, performance.now() + 500);
+      if (!held.has(k)) armRepeat(k);
       held.add(k); AudioSys.ensureCtx();
     },
-    virtualUp(k) { held.delete(k); },
+    virtualUp(k) { held.delete(k); repeatAt.delete(k); },
     // メニューでの素早いフリックも次フレームまでpressedを保持する。
-    virtualUnhold(k) { held.delete(k); },
+    virtualUnhold(k) { held.delete(k); repeatAt.delete(k); },
   };
   window.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#touch-controls [data-key]').forEach(button => {
@@ -89,11 +116,21 @@ const Input = (() => {
       const distance = Math.hypot(dx, dy);
       const travel = Math.min(42, distance);
       const nx = distance ? dx / distance : 0, ny = distance ? dy / distance : 0;
+      // 指が外周を越えたらスティックの中心も追う。画面のどこからでも楽に切り返せる。
+      if (distance > 58) {
+        originX = e.clientX - nx * 58; originY = e.clientY - ny * 58;
+        stick.style.left = `${originX}px`; stick.style.top = `${originY}px`;
+      }
       knob.style.transform = `translate(${nx * travel}px, ${ny * travel}px)`;
       const next = new Set();
       if (distance >= 12) {
         // グリッド移動なので、斜め入力は傾きの大きい軸へ素直に丸める。
-        if (Math.abs(nx) > Math.abs(ny)) next.add(nx < 0 ? 'left' : 'right');
+        const current = [...activeMoveKeys][0];
+        const horizontal = current === 'left' || current === 'right';
+        // 対角線付近の細かな指ぶれで上下・左右が交互になるのを防ぐ。
+        if (current && Math.abs(Math.abs(nx) - Math.abs(ny)) < .16) {
+          next.add(horizontal ? (nx < 0 ? 'left' : 'right') : (ny < 0 ? 'up' : 'down'));
+        } else if (Math.abs(nx) > Math.abs(ny)) next.add(nx < 0 ? 'left' : 'right');
         else next.add(ny < 0 ? 'up' : 'down');
       }
       setMoveKeys(next);
@@ -125,6 +162,13 @@ const Input = (() => {
     moveZone?.addEventListener('pointercancel', releaseStick);
     moveZone?.addEventListener('lostpointercapture', releaseStick);
     moveZone?.addEventListener('contextmenu', e => e.preventDefault());
+    const clearStick = () => {
+      setMoveKeys(new Set()); stickPointer = null;
+      if (knob) knob.style.transform = '';
+      stick?.classList.remove('is-visible');
+    };
+    window.addEventListener('blur', clearStick);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { clearStick(); api.clear(); } });
   });
   return api;
 })();
@@ -311,8 +355,10 @@ const Game = {
   party: [], reserve: [], bag: [], equipBag: [], gold: 0, flags: {},
   floor: 1, map: null, px: 10, py: 12, dir: 'd',
   ox: 0, oy: 0, moving: false, moveT: 0, moveFromDir: 'd', animT: 0,
-  walkAnimT: 0,
-  partyPath: null, partyPathFrom: null,
+  walkAnimT: 0, walkDistance: 0,
+  partyPath: null, partyPathFrom: null, partyWalkDistances: [0, 0, 0],
+  fieldStopAction: null, cameraFocusX: null, cameraFocusY: null,
+  fieldBaselineCache: null, fieldBaselineCanvas: null,
   visitedTowns: [1], lastInn: 1, steps: 0, repel: 0,
   encounterDistance: 0,
   dialog: null, choiceBox: null, menuStack: [],
@@ -402,6 +448,12 @@ const Game = {
       this.party[0].weapon = 'stick'; this.party[0].armor = 'cloth';
     }
     if (!this.map) this.loadFloor(2, null);
+    if (test === 'battle-party') {
+      this.party = ['hero', 'rino', 'gald', 'fio'].map(id => Chars.makeHuman(id, 8));
+      this.loadFloor(12, null); this.state = 'battle';
+      Battle.start({ enemySpecs: ['goblin', 'aquan', 'slimered'], boss: false, onEnd: () => {} });
+      return true;
+    }
     if (test === 'battle-tier1') {
       this.state = 'battle';
       Battle.start({ enemySpecs: ['slime', 'bat', 'rat'], boss: false, onEnd: () => {} });
@@ -754,7 +806,8 @@ const Game = {
       this.px = this.map.entry.x; this.py = this.map.entry.y;
     }
     this.ignoreStairs = { x: this.px, y: this.py };
-    this.ox = 0; this.oy = 0; this.moving = false; this.moveFromDir = this.dir;
+    this.ox = 0; this.oy = 0; this.moving = false; this.moveT = 0; this.moveFromDir = this.dir;
+    this.fieldStopAction = null; this.cameraFocusX = null; this.cameraFocusY = null;
     this.resetPartyPath();
     this.ensurePartyFieldAssets();
     for (const id of new Set(this.map.npcs.map(n => n.spr))) {
@@ -768,7 +821,7 @@ const Game = {
         n.dir = n.dir || (i % 2 ? 'l' : 'r');
         n.npcFromDir = n.dir;
         n.npcWait = .8 + ((n.x * 7 + n.y * 3 + i) % 8) * .28;
-        n.npcMoving = false; n.npcMoveT = 0;
+        n.npcMoving = false; n.npcMoveT = 0; n.npcWalkDistance = 0;
       });
     }
     this.floorLabelT = 3;
@@ -803,12 +856,76 @@ const Game = {
     const point = { x: this.px, y: this.py, dir: this.dir };
     this.partyPath = Array.from({ length: 4 }, () => ({ ...point }));
     this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
+    this.walkDistance = 0; this.walkAnimT = 0;
+    this.partyWalkDistances = [0, 0, 0];
   },
 
-  // 1マスの論理移動はそのままに、描画位置だけを滑らかに加減速させる。
+  // 向きの切替など、距離そのものを変えない見た目だけの補間に使う。
   fieldMoveEase(t) {
     const p = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
     return p * p * (3 - 2 * p);
+  },
+
+  heldFieldDirection() {
+    if (Input.held('up')) return 'u';
+    if (Input.held('down')) return 'd';
+    if (Input.held('left')) return 'l';
+    if (Input.held('right')) return 'r';
+    return null;
+  },
+
+  fieldDirectionVector(dir) {
+    return { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[dir] || [0, 0];
+  },
+
+  beginFieldStep(dir) {
+    if (!dir) return false;
+    const fromDir = this.dir;
+    this.dir = dir;
+    const [dx, dy] = this.fieldDirectionVector(dir);
+    const nx = this.px + dx, ny = this.py + dy;
+    if (!Maps.walkable(this.map, nx, ny)) return false;
+    if (!this.partyPath) this.resetPartyPath();
+    this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
+    this.partyPath = [{ x: nx, y: ny, dir }, ...this.partyPath].slice(0, 4);
+    this.px = nx; this.py = ny;
+    this.moving = true; this.moveT = 0; this.moveFromDir = fromDir;
+    this.ox = -dx * 32; this.oy = -dy * 32;
+    return true;
+  },
+
+  advanceFieldMotion(distance) {
+    const advance = Math.max(0, Math.min(1 - this.moveT, distance));
+    if (advance <= 0) return 0;
+    this.moveT += advance;
+    this.walkDistance += advance;
+    this.walkAnimT = this.walkDistance;
+    if (!Array.isArray(this.partyWalkDistances)) this.partyWalkDistances = [0, 0, 0];
+    for (let i = 0; i < 3; i++) {
+      const from = this.partyPathFrom && this.partyPathFrom[i + 1];
+      const to = this.partyPath && this.partyPath[i + 1];
+      if (from && to && (from.x !== to.x || from.y !== to.y)) {
+        this.partyWalkDistances[i] = (this.partyWalkDistances[i] || 0) + advance;
+      }
+    }
+    const [dx, dy] = this.fieldDirectionVector(this.dir);
+    this.ox = dx * (this.moveT - 1) * 32;
+    this.oy = dy * (this.moveT - 1) * 32;
+    return advance;
+  },
+
+  updateFieldCamera(dt, snap = false) {
+    const targetX = this.px * 32 + 16 + this.ox;
+    const targetY = this.py * 32 + 16 + this.oy;
+    const invalid = !Number.isFinite(this.cameraFocusX) || !Number.isFinite(this.cameraFocusY);
+    const teleported = !invalid && Math.hypot(targetX - this.cameraFocusX, targetY - this.cameraFocusY) > 96;
+    if (snap || invalid || teleported) {
+      this.cameraFocusX = targetX; this.cameraFocusY = targetY; return;
+    }
+    // 指数補間なら60/120fpsで体感が変わらず、角でもカメラだけが急旋回しない。
+    const blend = 1 - Math.exp(-Math.max(0, dt) * 11);
+    this.cameraFocusX += (targetX - this.cameraFocusX) * blend;
+    this.cameraFocusY += (targetY - this.cameraFocusY) * blend;
   },
 
   playFieldMusic() {
@@ -982,44 +1099,55 @@ const Game = {
   // ---------- フィールド ----------
   updateField(dt) {
     this.updateTownNpcs(dt);
-    // 移動アニメーション
+    const cancelPressed = Input.pressed('cancel');
+    const okPressed = Input.pressed('ok');
     if (this.moving) {
-      this.walkAnimT += dt;
-      this.moveT += dt * 4.4;
-      if (this.moveT >= 1) {
-        this.moveT = 1; this.moving = false; this.ox = 0; this.oy = 0;
-        this.moveFromDir = this.dir;
-        this.onStep();
-      } else {
-        const d = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[this.dir];
-        const eased = this.fieldMoveEase(this.moveT);
-        this.ox = d[0] * (eased - 1) * 32;
-        this.oy = d[1] * (eased - 1) * 32;
+      // 中間座標でメニューや会話へ入らず、次の接地位置で安全に実行する。
+      if (cancelPressed) this.fieldStopAction = 'menu';
+      else if (okPressed) this.fieldStopAction = 'interact';
+    } else {
+      if (cancelPressed) { this.openMenu(); this.updateFieldCamera(dt); return; }
+      if (okPressed) { this.interact(); this.updateFieldCamera(dt); return; }
+      const dir = this.heldFieldDirection();
+      if (!dir || !this.beginFieldStep(dir)) { this.updateFieldCamera(dt); return; }
+    }
+
+    // 余った時間を次のマスへ渡す。タイル境界の1フレーム停止と、毎歩の再加速をなくす。
+    let remaining = Math.max(0, dt) * 4.4;
+    let completed = 0;
+    while (this.moving && remaining > 1e-8 && completed < 8) {
+      remaining -= this.advanceFieldMotion(remaining);
+      if (this.moveT < 1 - 1e-8) break;
+
+      this.moveT = 1; this.moving = false; this.ox = 0; this.oy = 0;
+      this.walkDistance = Math.round(this.walkDistance * 1000000) / 1000000;
+      this.partyWalkDistances = this.partyWalkDistances.map(v => Math.round(v * 1000000) / 1000000);
+      this.onStep();
+      completed++;
+
+      // 階段・落とし穴・遭遇は入力より優先し、残差で次のマスへ入らない。
+      if (this.state !== 'field' || this.fadeDir !== 0) {
+        this.fieldStopAction = null;
+        this.updateFieldCamera(0, true);
+        return;
       }
-      return;
-    }
+      if (this.fieldStopAction) {
+        const action = this.fieldStopAction;
+        this.fieldStopAction = null;
+        this.moveFromDir = this.dir;
+        if (action === 'menu') this.openMenu();
+        else this.interact();
+        this.updateFieldCamera(0, true);
+        return;
+      }
 
-    if (Input.pressed('cancel')) { this.openMenu(); return; }
-    if (Input.pressed('ok')) { this.interact(); return; }
-
-    let dir = null;
-    if (Input.held('up')) dir = 'u';
-    else if (Input.held('down')) dir = 'd';
-    else if (Input.held('left')) dir = 'l';
-    else if (Input.held('right')) dir = 'r';
-    if (!dir) return;
-    const fromDir = this.dir;
-    this.dir = dir;
-    const d = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[dir];
-    const nx = this.px + d[0], ny = this.py + d[1];
-    if (Maps.walkable(this.map, nx, ny)) {
-      if (!this.partyPath) this.resetPartyPath();
-      this.partyPathFrom = this.partyPath.map(p => ({ ...p }));
-      this.partyPath = [{ x: nx, y: ny, dir }, ...this.partyPath].slice(0, 4);
-      this.px = nx; this.py = ny;
-      this.moving = true; this.moveT = 0; this.moveFromDir = fromDir;
-      this.ox = -d[0] * 32; this.oy = -d[1] * 32;
+      const nextDir = this.heldFieldDirection();
+      if (!nextDir || !this.beginFieldStep(nextDir)) {
+        this.moveFromDir = this.dir;
+        break;
+      }
     }
+    this.updateFieldCamera(dt);
   },
 
   updateTownNpcs(dt) {
@@ -1031,9 +1159,12 @@ const Game = {
     for (const n of this.map.npcs) {
       if (!n.wander || n.event || n.behindCounter) continue;
       if (n.npcMoving) {
-        n.npcMoveT += dt * 2.65;
+        const before = n.npcMoveT || 0;
+        n.npcMoveT = Math.min(1, before + Math.max(0, dt) * 2.65);
+        n.npcWalkDistance = (n.npcWalkDistance || 0) + (n.npcMoveT - before);
         if (n.npcMoveT >= 1) {
           n.npcMoveT = 1; n.npcMoving = false;
+          n.npcWalkDistance = Math.round(n.npcWalkDistance * 1000000) / 1000000;
           n.npcWait = 1.2 + Math.random() * 2.8;
         }
         continue;
@@ -1048,10 +1179,8 @@ const Game = {
         { id: 'l', dx: -1, dy: 0 }, { id: 'r', dx: 1, dy: 0 },
         { id: 'u', dx: 0, dy: -1 }, { id: 'd', dx: 0, dy: 1 },
       ];
-      // 同じ方向へ進みやすくし、毎回ふらふら向きが変わるのを防ぐ。
-      dirs.sort((a, b) => (a.id === n.dir ? -1 : b.id === n.dir ? 1 : Math.random() - .5));
       const radius = n.wanderRadius || 2;
-      const next = dirs.find(d => {
+      const choices = dirs.filter(d => {
         const nx = n.x + d.dx, ny = n.y + d.dy;
         if (Math.abs(nx - n.homeX) + Math.abs(ny - n.homeY) > radius) return false;
         // 1Fの池畔にいる男性は、描き下ろし背景の岸沿いだけを往復する。
@@ -1062,10 +1191,15 @@ const Game = {
         if (this.map.exit && Math.abs(nx - this.map.exit.x) + Math.abs(ny - this.map.exit.y) <= 1) return false;
         return true;
       });
+      // 直進を少し優先しつつ、候補選択自体は安定した配列から行う。
+      const straight = choices.find(d => d.id === n.dir);
+      const next = straight && Math.random() < .64
+        ? straight : choices[Math.floor(Math.random() * choices.length)];
       if (!next) { n.npcWait = .8 + Math.random() * 1.5; continue; }
       n.npcFromX = n.x; n.npcFromY = n.y; n.npcFromDir = n.dir || next.id;
       n.x += next.dx; n.y += next.dy; n.dir = next.id;
       n.npcMoveT = 0; n.npcMoving = true;
+      if (!Number.isFinite(n.npcWalkDistance)) n.npcWalkDistance = 0;
     }
   },
 
@@ -2423,8 +2557,12 @@ const Game = {
     const TS = 32;
     const sheet = Art.getTileSheet(map.tier);
     // カメラ
-    let camX = this.px * TS + 16 + this.ox - 256;
-    let camY = this.py * TS + 16 + this.oy - 224;
+    const playerWorldX = this.px * TS + 16 + this.ox;
+    const playerWorldY = this.py * TS + 16 + this.oy;
+    const focusX = Number.isFinite(this.cameraFocusX) ? this.cameraFocusX : playerWorldX;
+    const focusY = Number.isFinite(this.cameraFocusY) ? this.cameraFocusY : playerWorldY;
+    let camX = focusX - 256;
+    let camY = focusY - 224;
     camX = Math.max(0, Math.min(map.w * TS - 512, camX));
     camY = Math.max(0, Math.min(map.h * TS - 448, camY));
     if (map.w * TS < 512) camX = (map.w * TS - 512) / 2;
@@ -2484,21 +2622,20 @@ const Game = {
     const frame = Math.floor(this.animT * 2.5) % 2;
     const actors = map.npcs.map(n => {
       const t = n.npcMoving ? Math.max(0, Math.min(1, n.npcMoveT || 0)) : 1;
-      const eased = this.fieldMoveEase(t);
-      const x = n.npcMoving ? n.npcFromX + (n.x - n.npcFromX) * eased : n.x;
-      const y = n.npcMoving ? n.npcFromY + (n.y - n.npcFromY) * eased : n.y;
+      const x = n.npcMoving ? n.npcFromX + (n.x - n.npcFromX) * t : n.x;
+      const y = n.npcMoving ? n.npcFromY + (n.y - n.npcFromY) * t : n.y;
       return {
-        kind: 'npc', n, x, y, moving: !!n.npcMoving, motionT: eased,
+        kind: 'npc', n, x, y, moving: !!n.npcMoving, motionT: t,
+        walkDistance: n.npcWalkDistance || 0,
         fromDir: n.npcFromDir || n.dir, sortY: y * TS + 31,
       };
     });
-    const pxx = Math.round(this.px * TS + this.ox - camX);
-    const pyy = Math.round(this.py * TS + this.oy - camY);
+    const pxx = this.px * TS + this.ox - camX;
+    const pyy = this.py * TS + this.oy - camY;
     const followers = this.party.filter(m => !(m.kind === 'human' && m.id === 'hero')).slice(0, 3);
     const pathTo = this.partyPath || [];
     const pathFrom = this.partyPathFrom || pathTo;
-    const rawProgress = this.moving ? this.moveT : 1;
-    const progress = this.fieldMoveEase(rawProgress);
+    const progress = this.moving ? this.moveT : 1;
     // 階段・ワープ直後は全員の経路が先頭と同じマスから始まる。
     // その数フレームだけ全員を重ねて描くと一体化して見えるため、
     // 実際に隊列の間隔ができるまでは同じマスの後続を隠す。
@@ -2515,15 +2652,17 @@ const Game = {
       actors.push({
         kind: 'follower', member, x: wx, y: wy, dir: to.dir || this.dir,
         fromDir: from.dir || to.dir || this.dir, moving: followerMoving,
-        motionT: progress, stepPolarity: i % 2 ? -1 : 1, sortY: wy + 31,
+        motionT: progress, walkDistance: (this.partyWalkDistances && this.partyWalkDistances[i]) || 0,
+        stepPolarity: i % 2 ? -1 : 1, sortY: wy + 31,
       });
     });
     actors.push({ kind: 'player', sortY: this.py * TS + this.oy + 31 });
     actors.sort((a, b) => a.sortY - b.sortY);
     for (const actor of actors) {
-      if (actor.kind === 'player') this.drawFieldHero(g, pxx, pyy, frame, progress);
+      if (actor.kind === 'player') this.drawFieldHero(g, pxx, pyy, frame, progress, this.walkDistance);
       else if (actor.kind === 'follower') this.drawFieldPartyMember(g, actor, camX, camY);
-      else this.drawFieldNpc(g, actor.n, camX, camY, frame, actor.x, actor.y, actor.motionT, actor.fromDir);
+      else this.drawFieldNpc(g, actor.n, camX, camY, frame, actor.x, actor.y,
+        actor.motionT, actor.fromDir, actor.walkDistance);
     }
 
     // 木の梢や屋根を人物より後に再描画し、一枚絵でも遮蔽を成立させる。
@@ -2940,17 +3079,67 @@ const Game = {
     g.restore();
   },
 
-  drawFieldHero(g, pxx, pyy, fallbackFrame, progress = 1) {
+  fieldSheetBaselineShift(sheet, cols, rows, col, row, drawHeight) {
+    if (!sheet || !sheet.naturalWidth || typeof document === 'undefined') return 0;
+    if (!this.fieldBaselineCache) this.fieldBaselineCache = new WeakMap();
+    let layouts = this.fieldBaselineCache.get(sheet);
+    if (!layouts) { layouts = new Map(); this.fieldBaselineCache.set(sheet, layouts); }
+    const key = `${cols}x${rows}`;
+    let offsets = layouts.get(key);
+    if (!offsets) {
+      offsets = new Array(cols * rows).fill(0);
+      try {
+        // 小さく縮小した透過像を一度だけ読み、各セルの見える最下端を中央値へ揃える。
+        // フレームごとの透明余白による足元の上下だけを直し、素材や描画サイズは変えない。
+        const sampleW = 40, sampleH = 56;
+        const canvas = this.fieldBaselineCanvas || document.createElement('canvas');
+        this.fieldBaselineCanvas = canvas;
+        canvas.width = cols * sampleW; canvas.height = rows * sampleH;
+        const cg = canvas.getContext('2d', { willReadFrequently: true });
+        if (!cg) throw new Error('baseline canvas unavailable');
+        cg.clearRect(0, 0, canvas.width, canvas.height);
+        cg.drawImage(sheet, 0, 0, canvas.width, canvas.height);
+        const pixels = cg.getImageData(0, 0, canvas.width, canvas.height).data;
+        const bottoms = [];
+        for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+          let bottom = -1;
+          for (let y = sampleH - 1; y >= 0 && bottom < 0; y--) {
+            const py = r * sampleH + y;
+            for (let x = 0; x < sampleW; x++) {
+              const px = c * sampleW + x;
+              if (pixels[(py * canvas.width + px) * 4 + 3] > 24) { bottom = y; break; }
+            }
+          }
+          bottoms[r * cols + c] = bottom;
+        }
+        const valid = bottoms.filter(v => v >= 0).sort((a, b) => a - b);
+        if (valid.length) {
+          const middle = Math.floor(valid.length / 2);
+          const median = valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
+          offsets = bottoms.map(bottom => bottom < 0 ? 0 : (median - bottom) / (sampleH - 1));
+        }
+      } catch (e) {
+        // 読取不可でも従来の接地位置で描ける。失敗結果もキャッシュして再試行を避ける。
+        offsets = new Array(cols * rows).fill(0);
+      }
+      layouts.set(key, offsets);
+    }
+    const shift = (offsets[row * cols + col] || 0) * drawHeight;
+    return Math.max(-3, Math.min(3, shift));
+  },
+
+  drawFieldHero(g, pxx, pyy, fallbackFrame, progress = 1, walkDistance = 0) {
     const footX = pxx + 16, footY = pyy + 31;
     if (this.drawFieldCharacterSheet(g, 'hero', footX, footY, this.dir,
-      this.moving, progress, this.moveFromDir || this.dir, 1)) return;
-    const spr = Art.get(`hero_${this.dir}${fallbackFrame}`);
+      this.moving, walkDistance, progress, this.moveFromDir || this.dir, 1)) return;
+    const travel = Number.isFinite(walkDistance) ? walkDistance : 0;
+    const walkFrame = this.moving ? Math.floor((((travel % 1) + 1) % 1) * 2) : 0;
+    const spr = Art.get(`hero_${this.dir}${this.moving ? walkFrame : 0}`);
     if (!spr) return;
-    const p = Math.max(0, Math.min(1, progress));
-    const envelope = this.moving ? Math.sin(Math.PI * p) : 0;
-    const phase = p * Math.PI * 2;
-    const lift = Math.abs(Math.sin(phase)) * .65 * envelope;
-    const lean = Math.sin(phase) * .012 * envelope;
+    const phase = travel * Math.PI * 2;
+    const motionScale = this.reducedMotion ? .3 : 1;
+    const lift = this.moving ? Math.abs(Math.sin(phase)) * .65 * motionScale : 0;
+    const lean = this.moving ? Math.sin(phase) * .012 * motionScale : 0;
     this.drawActorShadow(g, footX, footY, 12, 4, lift);
     g.save();
     g.translate(footX, footY - lift);
@@ -2959,8 +3148,8 @@ const Game = {
     g.restore();
   },
 
-  drawFieldCharacterSheet(g, id, footX, footY, dir, moving = false, progress = 0,
-    fromDir = dir, stepPolarity = 1) {
+  drawFieldCharacterSheet(g, id, footX, footY, dir, moving = false, walkDistance = 0,
+    progress = 0, fromDir = dir, stepPolarity = 1) {
     const sheet = this.fieldCharacters && this.fieldCharacters[id];
     if (!sheet || !sheet.complete || !sheet.naturalWidth) return false;
     const cols = 6, rows = 4;
@@ -2969,19 +3158,23 @@ const Game = {
     const row = rowsByDir[dir] ?? 0;
     const fromRow = rowsByDir[fromDir] ?? row;
     const p = Math.max(0, Math.min(1, progress));
-    // 6コマを1マスの距離に固定し、足運びと地面の移動量を同期する。
-    const col = moving ? Math.min(cols - 1, Math.floor(p * cols)) : 0;
-    const envelope = moving ? Math.sin(Math.PI * p) : 0;
-    const phase = p * Math.PI * 2;
+    const travel = Number.isFinite(walkDistance) ? walkDistance : 0;
+    const cycle = ((travel % 1) + 1) % 1;
+    // コマと上下動は累積移動距離から選び、タイル境界でも位相を再始動しない。
+    const col = moving ? Math.min(cols - 1, Math.floor(cycle * cols)) : 0;
+    const phase = travel * Math.PI * 2;
+    const motionScale = this.reducedMotion ? .3 : 1;
     const stride = Math.sin(phase) * stepPolarity;
-    const lift = Math.abs(Math.sin(phase)) * .68 * envelope;
-    const lean = stride * .013 * envelope;
-    const squash = Math.cos(phase * 2) * .006 * envelope;
+    const lift = moving ? Math.abs(Math.sin(phase)) * .68 * motionScale : 0;
+    const lean = moving ? stride * .013 * motionScale : 0;
+    const squash = moving ? Math.sin(phase * 2) * .006 * motionScale : 0;
     const isTurning = moving && fromRow !== row;
     const turnT = isTurning ? this.fieldMoveEase(Math.min(1, p / .24)) : 1;
     const turnSign = dir === 'l' ? -1 : dir === 'r' ? 1 : 0;
     const sizes = { rino: [47, 65], gald: [52, 68], fio: [47, 64] };
     const [dw, dh] = sizes[id] || [48, 66];
+    const baselineShift = this.fieldSheetBaselineShift(sheet, cols, rows, col, row, dh);
+    const fromBaselineShift = this.fieldSheetBaselineShift(sheet, cols, rows, col, fromRow, dh);
     this.drawActorShadow(g, footX, footY, Math.max(10, dw * .24), 4, lift);
     g.save();
     g.translate(footX, footY + 3 - lift);
@@ -2989,10 +3182,12 @@ const Game = {
     g.scale(1 - squash, 1 + squash);
     if (isTurning && turnT < 1) {
       g.globalAlpha = 1 - turnT;
-      g.drawImage(sheet, col * cellW, fromRow * cellH, cellW, cellH, -dw / 2, -dh, dw, dh);
+      g.drawImage(sheet, col * cellW, fromRow * cellH, cellW, cellH,
+        -dw / 2, -dh + fromBaselineShift, dw, dh);
       g.globalAlpha = turnT;
     }
-    g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH, -dw / 2, -dh, dw, dh);
+    g.drawImage(sheet, col * cellW, row * cellH, cellW, cellH,
+      -dw / 2, -dh + baselineShift, dw, dh);
     g.restore();
     return true;
   },
@@ -3001,7 +3196,7 @@ const Game = {
     const footX = actor.x + 16 - camX, footY = actor.y + 31 - camY;
     if (actor.member.kind === 'human') {
       if (this.drawFieldCharacterSheet(g, actor.member.id, footX, footY, actor.dir,
-        actor.moving, actor.motionT, actor.fromDir, actor.stepPolarity)) return;
+        actor.moving, actor.walkDistance, actor.motionT, actor.fromDir, actor.stepPolarity)) return;
       const human = HUMANS[actor.member.id];
       const fallback = human && (Art.get(`${human.spr}_${actor.dir}0`) || Art.get(`${human.spr}_0`) || Art.get(human.spr));
       if (fallback) {
@@ -3016,31 +3211,32 @@ const Game = {
     const large = !!def.big;
     const size = large ? 48 : 38;
     const p = Math.max(0, Math.min(1, actor.motionT ?? 1));
+    const travel = Number.isFinite(actor.walkDistance) ? actor.walkDistance : 0;
     const polarity = actor.stepPolarity || 1;
-    const phase = p * Math.PI * 2 + (polarity < 0 ? Math.PI : 0);
-    const envelope = actor.moving ? Math.sin(Math.PI * p) : 0;
+    const phase = travel * Math.PI * 2 + (polarity < 0 ? Math.PI : 0);
+    const motionScale = this.reducedMotion ? .3 : 1;
     const species = actor.member.id;
-    const idleWave = Math.sin(this.animT * 2.2 + actor.x * .03);
-    let lift = -idleWave * .28 * (1 - envelope);
+    const idleWave = Math.sin(this.animT * 2.2 + actor.x * .03) * motionScale;
+    let lift = actor.moving ? 0 : -idleWave * .28;
     let sx = 1, sy = 1, lean = 0, shadowLift = 0, shadowOpacity = 1;
     if (actor.moving) {
       if (/slime/.test(species)) {
-        const pulse = Math.sin(phase) * envelope;
+        const pulse = Math.sin(phase) * motionScale;
         sx = 1 + pulse * .065; sy = 1 - pulse * .08;
-        lift += Math.abs(Math.sin(phase)) * 1.05 * envelope; shadowLift = Math.max(0, lift);
+        lift = Math.abs(Math.sin(phase)) * 1.05 * motionScale; shadowLift = lift;
       } else if (/bat/.test(species)) {
-        sy = 1 + Math.sin(phase * 2) * .045 * envelope;
-        lift = 2.3 + idleWave * .55 * (1 - envelope) + Math.sin(phase) * 1.2 * envelope;
+        sy = 1 + Math.sin(phase * 2) * .045 * motionScale;
+        lift = 2.3 + Math.sin(phase) * 1.2 * motionScale;
         shadowLift = 4; shadowOpacity = .76;
       } else if (/ghost|wraith|mist|aquan/.test(species)) {
-        lift = 1.8 + idleWave * .6 * (1 - envelope) + Math.sin(phase) * 1.35 * envelope;
-        lean = Math.sin(phase) * .018 * envelope; shadowLift = 3.5; shadowOpacity = .8;
+        lift = 1.8 + Math.sin(phase) * 1.35 * motionScale;
+        lean = Math.sin(phase) * .018 * motionScale; shadowLift = 3.5; shadowOpacity = .8;
       } else if (/rock|machine/.test(species)) {
-        lift += Math.abs(Math.sin(phase)) * .75 * envelope;
-        sx = 1 + Math.sin(phase) * .014 * envelope; shadowLift = lift;
+        lift = Math.abs(Math.sin(phase)) * .75 * motionScale;
+        sx = 1 + Math.sin(phase) * .014 * motionScale; shadowLift = lift;
       } else {
-        lift += Math.abs(Math.sin(phase)) * 1.05 * envelope;
-        lean = Math.sin(phase) * .02 * envelope * polarity; shadowLift = lift;
+        lift = Math.abs(Math.sin(phase)) * 1.05 * motionScale;
+        lean = Math.sin(phase) * .02 * motionScale * polarity; shadowLift = lift;
       }
     } else if (/bat/.test(species)) {
       lift = 2.3 + idleWave * .55; shadowLift = 4; shadowOpacity = .76;
@@ -3065,7 +3261,7 @@ const Game = {
   },
 
   drawFieldNpc(g, n, camX, camY, frame, worldX = n.x, worldY = n.y,
-    motionT = 1, fromDir = n.dir) {
+    motionT = 1, fromDir = n.dir, walkDistance = 0) {
     const TS = 32;
     const nx = worldX * TS - camX, ny = worldY * TS - camY;
     const footX = nx + 16, footY = ny + 31;
@@ -3080,7 +3276,7 @@ const Game = {
     if (!n.spr) return;
     if (this.fieldCharacters && this.fieldCharacters[n.spr]) {
       if (this.drawFieldCharacterSheet(g, n.spr, footX, footY, n.dir || 'd',
-        !!n.npcMoving, motionT, fromDir || n.dir, 1)) return;
+        !!n.npcMoving, walkDistance, motionT, fromDir || n.dir, 1)) return;
     }
     const npcSheet = this.npcDirectionSheets && this.npcDirectionSheets[n.spr];
     const npcSize = {
@@ -3094,15 +3290,18 @@ const Game = {
       const col = colsByDir[n.dir || 'd'] ?? 0;
       const fromCol = colsByDir[fromDir || n.dir || 'd'] ?? col;
       const p = Math.max(0, Math.min(1, motionT));
-      const phase = n.npcMoving ? p * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
-      const envelope = n.npcMoving ? Math.sin(Math.PI * p) : 0;
+      const travel = Number.isFinite(walkDistance) ? walkDistance : 0;
+      const motionScale = this.reducedMotion ? .3 : 1;
+      const phase = n.npcMoving ? travel * Math.PI * 2 : this.animT * 1.7 + n.x * .7 + n.y;
       const stride = Math.sin(phase);
-      const lift = n.npcMoving ? Math.abs(stride) * .72 * envelope : Math.sin(phase) * .16;
-      const sideStep = n.npcMoving && (n.dir === 'u' || n.dir === 'd') ? stride * .22 * envelope : 0;
-      const lean = n.npcMoving ? stride * .016 * envelope : 0;
-      const squash = n.npcMoving ? Math.cos(phase * 2) * .006 * envelope : 0;
+      const lift = n.npcMoving ? Math.abs(stride) * .72 * motionScale : Math.sin(phase) * .16 * motionScale;
+      const sideStep = n.npcMoving && (n.dir === 'u' || n.dir === 'd') ? stride * .22 * motionScale : 0;
+      const lean = n.npcMoving ? stride * .016 * motionScale : 0;
+      const squash = n.npcMoving ? Math.sin(phase * 2) * .006 * motionScale : 0;
       const isTurning = n.npcMoving && fromCol !== col;
       const turnT = isTurning ? this.fieldMoveEase(Math.min(1, p / .28)) : 1;
+      const baselineShift = this.fieldSheetBaselineShift(npcSheet, 4, 1, col, 0, dh);
+      const fromBaselineShift = this.fieldSheetBaselineShift(npcSheet, 4, 1, fromCol, 0, dh);
       this.drawActorShadow(g, footX, footY, Math.max(9, dw * .24), 3.5, Math.max(0, lift));
       g.save();
       g.translate(footX + sideStep, footY + 2 - lift);
@@ -3110,22 +3309,25 @@ const Game = {
       g.scale(1 - squash, 1 + squash);
       if (isTurning && turnT < 1) {
         g.globalAlpha = 1 - turnT;
-        g.drawImage(npcSheet, fromCol * cellW, 0, cellW, cellH, -dw / 2, -dh, dw, dh);
+        g.drawImage(npcSheet, fromCol * cellW, 0, cellW, cellH,
+          -dw / 2, -dh + fromBaselineShift, dw, dh);
         g.globalAlpha = turnT;
       }
-      g.drawImage(npcSheet, col * cellW, 0, cellW, cellH, -dw / 2, -dh, dw, dh);
+      g.drawImage(npcSheet, col * cellW, 0, cellW, cellH,
+        -dw / 2, -dh + baselineShift, dw, dh);
       g.restore();
       return;
     }
     // V4全身立ち絵は会話専用。フィールドでは同一スケールの生成スプライトを使う。
-    const p = Math.max(0, Math.min(1, motionT));
-    const walkFrame = n.npcMoving ? Math.min(1, Math.floor(p * 2)) : frame;
+    const travel = Number.isFinite(walkDistance) ? walkDistance : 0;
+    const cycle = ((travel % 1) + 1) % 1;
+    const walkFrame = n.npcMoving ? Math.min(1, Math.floor(cycle * 2)) : 0;
     const spr = Art.get(`${n.spr}_${n.dir || 'd'}${walkFrame}`) || Art.get(`${n.spr}_${walkFrame}`) || Art.get(`${n.spr}_0`);
     if (spr) {
-      const phase = p * Math.PI * 2;
-      const envelope = n.npcMoving ? Math.sin(Math.PI * p) : 0;
-      const lift = Math.abs(Math.sin(phase)) * .55 * envelope;
-      const lean = Math.sin(phase) * .012 * envelope;
+      const phase = travel * Math.PI * 2;
+      const motionScale = this.reducedMotion ? .3 : 1;
+      const lift = n.npcMoving ? Math.abs(Math.sin(phase)) * .55 * motionScale : 0;
+      const lean = n.npcMoving ? Math.sin(phase) * .012 * motionScale : 0;
       this.drawActorShadow(g, footX, footY, 10, 3.5, lift);
       g.save();
       g.translate(footX, footY - lift);
