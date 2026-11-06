@@ -86,6 +86,9 @@
   const draw = Game.draw;
   Game.draw = function() {
     UI.hitAreas = [];
+    // ガイドの背後や非表示タブでは静止した画面を保ち、同じ絵を描き直さない。
+    // 復帰時は通常のdrawでタップ領域も作り直す。
+    if (document.hidden || nodes?.panel.open) { renderedMode = null; return; }
     draw.call(this);
     renderedMode = mode();
     syncHud();

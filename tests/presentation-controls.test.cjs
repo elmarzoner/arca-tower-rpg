@@ -80,9 +80,17 @@ assert.equal(elements.screen.style.height,'616px');
 Game.update(1/60); assert.equal(updates,1);
 elements['help-panel'].open=true; Game.update(1/60);
 assert.equal(updates,1,'guide pauses gameplay');
+const beforePausedDraw=draws;
+for(let frame=0;frame<120;frame++) Game.draw();
+assert.equal(draws,beforePausedDraw,'120 guide frames perform no redundant game paints');
+assert.equal(UI.hitAreas.length,0,'guide leaves no active canvas targets');
 elements['help-panel'].open=false; doc.hidden=true; Game.update(1/60);
-assert.equal(updates,1,'hidden page pauses gameplay'); doc.hidden=false;
+assert.equal(updates,1,'hidden page pauses gameplay');
+for(let frame=0;frame<120;frame++) Game.draw();
+assert.equal(draws,beforePausedDraw,'120 hidden frames perform no redundant game paints');
+doc.hidden=false;
 Game.draw(); assert.equal(UI.hitAreas.length,1,'tap regions reset every draw');
+assert.equal(draws,beforePausedDraw+1,'first visible frame immediately repaints and rebuilds hit regions');
 function tap() {
   clock.now+=200;
   elements.screen.emit('pointerdown',{pointerId:1,button:0,clientX:90,clientY:100});

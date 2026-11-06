@@ -223,5 +223,54 @@ for (const stamp of [.1,.4,.8]) {
 }
 context.Game.reducedMotion=false;
 
+// Use the real engine input queue: unlike a boolean stub, unconsumed virtual
+// pulses survive endFrame() and can otherwise undo a choice one frame later.
+const gameSource = fs.readFileSync(path.join(root, 'js/game.js'), 'utf8');
+const realInputSource = gameSource.slice(0, gameSource.indexOf('// ---------------- UI 描画'));
+assert.ok(realInputSource.includes('const Input ='), 'load the actual engine input implementation');
+const pulseGame = {...sandbox.Game, party:[member(),member('rino','Rino')]};
+const pulseContext = vm.createContext({...sandbox, Game:pulseGame,
+  window:{addEventListener(){}}, document:{getElementById(){return null;}},
+});
+vm.runInContext(realInputSource + '\n' + battleSource, pulseContext);
+const actual = vm.runInContext('({Input,Battle})', pulseContext);
+const simultaneous = () => {actual.Input.pulse('ok');actual.Input.pulse('cancel');};
+const secondFrame = () => {actual.Input.endFrame();actual.Battle.handleInput();actual.Input.endFrame();};
+for (const kind of ['targetE','targetA']) {
+  actual.Input.clear();
+  actual.Battle.start({enemySpecs:['slime','bat'],boss:false,onEnd(){}});
+  actual.Battle.queue=[]; actual.Battle.phase='command';
+  actual.Battle.menu={kind,sel:0,list:pulseGame.party,back:{kind:'cmd',sel:0},onPick(target){
+    actual.Battle.commitAction({member:pulseGame.party[0],cmd:kind==='targetE'?'attack':'spell',target});
+  }};
+  simultaneous(); actual.Battle.handleInput();
+  assert.equal(actual.Battle.memberIdx,1,`${kind}: first frame advances to the second member`);
+  assert.equal(actual.Battle.actions.length,1);
+  secondFrame();
+  assert.equal(actual.Battle.memberIdx,1,`${kind}: cancel cannot leak into the next frame`);
+  assert.equal(actual.Battle.actions.length,1,`${kind}: confirmed action stays queued`);
+}
+actual.Input.clear();
+let chainedDeclines=0;
+const chainedChoice={sel:0,yes(){},no(){chainedDeclines++;}};
+actual.Battle.choice={sel:0,yes(){actual.Battle.choice=chainedChoice;},no(){throw new Error('wrong choice');}};
+simultaneous(); actual.Battle.handleInput(); secondFrame();
+assert.equal(actual.Battle.choice,chainedChoice,'choice confirm does not leak cancel into a chained prompt');
+assert.equal(chainedDeclines,0);
+
+actual.Input.clear(); actual.Battle.choice=null;
+actual.Battle.memberIdx=1; actual.Battle.actions=[{member:pulseGame.party[0],cmd:'defend'}];
+actual.Battle.menu={kind:'cmd',sel:0};
+simultaneous(); actual.Battle.handleInput();
+const cancelledMenu=actual.Battle.menu;
+assert.equal(actual.Battle.memberIdx,0,'command cancel keeps its established priority');
+assert.equal(actual.Battle.actions.length,0);
+secondFrame();
+assert.equal(actual.Battle.menu,cancelledMenu,'unused confirm cannot open a target menu on the following frame');
+
+actual.Input.clear(); actual.Battle.queue=[{text:'Combat message'}];
+actual.Input.pulse('ok'); actual.Battle.handleInput();
+assert.equal(actual.Input.pressed('ok'),true,'message queue still receives confirmation in Battle.update');
+
 assert.doesNotMatch(battleSource, /fillRect\(x, y, drawW, drawH\)/, 'sprite hit feedback no longer uses a rectangular white flash');
 console.log('PASS battle v7: formation, HP, motion preference, kill flow, scrolling, 1+1 tap, targets, four-party status');

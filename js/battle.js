@@ -372,24 +372,27 @@ const Battle = {
 
   // ---------------- 入力 ----------------
   handleInput() {
+    // メッセージ送りのokはupdateへ渡す。操作可能な画面では両方を先に消費し、
+    // 決定/戻るの優先順位で使わなかった短いタップが次フレームへ漏れるのを防ぐ。
+    if (!this.choice && (this.queue.length > 0 || this.phase !== 'command' || !this.menu)) return;
+    const confirmPressed = Input.pressed('ok');
+    const cancelPressed = Input.pressed('cancel');
     if (this.choice) {
       if (Input.pressed('left') || Input.pressed('right') || Input.pressed('up') || Input.pressed('down')) {
         this.choice.sel = 1 - this.choice.sel; this.choice.tapSel = null; AudioSys.sfx('cursor');
       }
-      if (Input.pressed('ok')) {
+      if (confirmPressed) {
         AudioSys.sfx('ok');
         const c = this.choice; this.choice = null;
         (c.sel === 0 ? c.yes : c.no)();
         return;
       }
-      if (Input.pressed('cancel')) {
+      if (cancelPressed) {
         AudioSys.sfx('cancel');
         const c = this.choice; this.choice = null; c.no();
       }
       return;
     }
-    if (this.queue.length > 0 || this.phase !== 'command' || !this.menu) return;
-
     const menu = this.menu;
     const listLen = menu.kind === 'cmd' ? 5 : (menu.list ? menu.list.length : 0);
 
@@ -399,8 +402,8 @@ const Battle = {
       if (menu.sel >= alive.length) menu.sel = alive.length - 1;
       if (Input.pressed('left') || Input.pressed('up')) { menu.sel = (menu.sel + alive.length - 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('right') || Input.pressed('down')) { menu.sel = (menu.sel + 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
-      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(alive[menu.sel]); return; }
-      if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
+      if (confirmPressed) { AudioSys.sfx('ok'); menu.onPick(alive[menu.sel]); return; }
+      if (cancelPressed) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
     if (menu.kind === 'targetA') {
@@ -409,8 +412,8 @@ const Battle = {
       if (!n) return;
       if (Input.pressed('up') || Input.pressed('left')) { menu.sel = (menu.sel + n - 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('down') || Input.pressed('right')) { menu.sel = (menu.sel + 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
-      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); return; }
-      if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
+      if (confirmPressed) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); return; }
+      if (cancelPressed) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
 
@@ -421,7 +424,7 @@ const Battle = {
     if (next) { menu.sel = (menu.sel + 1) % listLen; menu.tapSel = null; AudioSys.sfx('cursor'); }
     if (menu.kind === 'spell' || menu.kind === 'item') this.keepMenuSelectionVisible(menu);
 
-    if (Input.pressed('cancel')) {
+    if (cancelPressed) {
       if (menu.kind !== 'cmd') { AudioSys.sfx('cancel'); this.menu = { kind: 'cmd', sel: 0 }; }
       else if (this.memberIdx > 0) {
         // 前のキャラのコマンドをやり直し
@@ -432,7 +435,7 @@ const Battle = {
       }
       return;
     }
-    if (!Input.pressed('ok')) return;
+    if (!confirmPressed) return;
 
     const member = Game.party[this.memberIdx];
 

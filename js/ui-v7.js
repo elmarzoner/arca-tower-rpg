@@ -127,45 +127,80 @@
     g.restore();
   };
 
+  let textLayoutCaches = new WeakMap();
+  UI.clearTextCache = () => { textLayoutCaches = new WeakMap(); };
+  const fonts = typeof document !== 'undefined' && document.fonts;
+  if (fonts) {
+    fonts.addEventListener?.('loadingdone', UI.clearTextCache);
+    fonts.addEventListener?.('loadingerror', UI.clearTextCache);
+    fonts.ready?.then(UI.clearTextCache);
+  }
+  function textLayout(g, kind, text, width, size, compute) {
+    // Keep contexts isolated, bound both entry count and retained string size,
+    // and include every text-layout property used by the canvas context.
+    if (text.length > 4096) return compute();
+    let cache = textLayoutCaches.get(g);
+    if (!cache) { cache = new Map(); textLayoutCaches.set(g, cache); }
+    const key = JSON.stringify([kind, UI.FONT, String(size), String(width), g.direction,
+      g.fontKerning, g.fontStretch, g.fontVariantCaps, g.letterSpacing, g.wordSpacing,
+      g.textRendering, g.lang, text]);
+    if (cache.has(key)) {
+      const value = cache.get(key);
+      cache.delete(key); cache.set(key, value);
+      return kind === 'wrap' ? value.slice() : value;
+    }
+    const value = compute();
+    cache.set(key, kind === 'wrap' ? value.slice() : value);
+    while (cache.size > 1024) cache.delete(cache.keys().next().value);
+    return value;
+  }
+
   UI.measure = function measure(g, value, size = 16) {
-    g.save();
-    g.font = `${size}px ${UI.FONT}`;
-    const width = g.measureText(value === undefined || value === null ? '' : String(value)).width;
-    g.restore();
-    return width;
+    const str = value === undefined || value === null ? '' : String(value);
+    return textLayout(g, 'measure', str, '', size, () => {
+      g.save();
+      g.font = `${size}px ${UI.FONT}`;
+      const width = g.measureText(str).width;
+      g.restore();
+      return width;
+    });
   };
 
   UI.fitText = function fitText(g, value, maxW, size = 16) {
     const str = value === undefined || value === null ? '' : String(value);
-    if (UI.measure(g, str, size) <= maxW) return str;
-    const ellipsis = '…';
-    let out = '';
-    for (const ch of str) {
-      if (UI.measure(g, out + ch + ellipsis, size) > maxW) break;
-      out += ch;
-    }
-    return out + ellipsis;
+    return textLayout(g, 'fit', str, maxW, size, () => {
+      if (UI.measure(g, str, size) <= maxW) return str;
+      const ellipsis = '…';
+      let out = '';
+      for (const ch of str) {
+        if (UI.measure(g, out + ch + ellipsis, size) > maxW) break;
+        out += ch;
+      }
+      return out + ellipsis;
+    });
   };
 
   UI.wrapLines = function wrapLines(g, value, maxW, size = 16) {
     const text = value === undefined || value === null ? '' : String(value);
-    const lines = [];
-    let line = '';
-    for (const ch of text) {
-      if (ch === '\n') {
-        lines.push(line);
-        line = '';
-        continue;
+    return textLayout(g, 'wrap', text, maxW, size, () => {
+      const lines = [];
+      let line = '';
+      for (const ch of text) {
+        if (ch === '\n') {
+          lines.push(line);
+          line = '';
+          continue;
+        }
+        if (line && UI.measure(g, line + ch, size) > maxW) {
+          lines.push(line);
+          line = ch;
+        } else {
+          line += ch;
+        }
       }
-      if (line && UI.measure(g, line + ch, size) > maxW) {
-        lines.push(line);
-        line = ch;
-      } else {
-        line += ch;
-      }
-    }
-    if (line || !lines.length || text.endsWith('\n')) lines.push(line);
-    return lines;
+      if (line || !lines.length || text.endsWith('\n')) lines.push(line);
+      return lines;
+    });
   };
 
   UI.textWrap = function textWrap(g, value, x, y, maxW, color = COLORS.ink, size = 16, lineH = 23, maxLines = Infinity) {
