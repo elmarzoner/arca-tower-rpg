@@ -1128,7 +1128,7 @@ const Game = {
       // 階段・落とし穴・遭遇は入力より優先し、残差で次のマスへ入らない。
       if (this.state !== 'field' || this.fadeDir !== 0) {
         this.fieldStopAction = null;
-        this.updateFieldCamera(0, true);
+        this.updateFieldCamera(dt);
         return;
       }
       if (this.fieldStopAction) {
@@ -1137,7 +1137,9 @@ const Game = {
         this.moveFromDir = this.dir;
         if (action === 'menu') this.openMenu();
         else this.interact();
-        this.updateFieldCamera(0, true);
+        // 会話やメニューは同じ場所を背景に使うため、追従中のカメラを跳ばさない。
+        // フロア読込・ワープのリセットは updateFieldCamera 自体が扱う。
+        this.updateFieldCamera(dt);
         return;
       }
 
@@ -1152,10 +1154,15 @@ const Game = {
 
   updateTownNpcs(dt) {
     if (!this.map || (!this.map.town && !this.map.settlement)) return;
-    const occupiedByParty = (x, y) => {
-      if (x === this.px && y === this.py) return true;
-      return (this.partyPath || []).slice(1, 4).some(p => p.x === x && p.y === y);
-    };
+    const followerCount = this.party.filter(m => !(m.kind === 'human' && m.id === 'hero')).slice(0, 3).length;
+    const occupiedPartyTiles = new Set([`${this.px},${this.py}`]);
+    for (const p of (this.partyPath || []).slice(1, followerCount + 1)) occupiedPartyTiles.add(`${p.x},${p.y}`);
+    // 移動中の出発マスにもまだ姿がある。町人側と同じく、到着まで両端を予約する。
+    // 実在する仲間の分だけを予約し、少人数編成の見えない経路は塞がない。
+    if (this.moving) {
+      for (const p of (this.partyPathFrom || []).slice(0, followerCount + 1)) occupiedPartyTiles.add(`${p.x},${p.y}`);
+    }
+    const occupiedByParty = (x, y) => occupiedPartyTiles.has(`${x},${y}`);
     for (const n of this.map.npcs) {
       if (!n.wander || n.event || n.behindCounter) continue;
       if (n.npcMoving) {
@@ -2638,17 +2645,17 @@ const Game = {
     const progress = this.moving ? this.moveT : 1;
     // 階段・ワープ直後は全員の経路が先頭と同じマスから始まる。
     // その数フレームだけ全員を重ねて描くと一体化して見えるため、
-    // 実際に隊列の間隔ができるまでは同じマスの後続を隠す。
-    const claimedPathTiles = new Set([`${this.px},${this.py}`]);
+    // 静止位置が完全に重なる後続だけ隠す。移動先タイルだけで判定すると、
+    // 反転した瞬間にまだ離れている仲間まで消えてしまう。
+    const claimedActorPositions = [{ x: this.px * TS + this.ox, y: this.py * TS + this.oy, moving: this.moving }];
     followers.forEach((member, i) => {
       const to = pathTo[i + 1] || pathTo[pathTo.length - 1] || { x: this.px, y: this.py, dir: this.dir };
       const from = pathFrom[i + 1] || to;
-      const pathKey = `${to.x},${to.y}`;
-      if (claimedPathTiles.has(pathKey)) return;
-      claimedPathTiles.add(pathKey);
       const wx = (from.x + (to.x - from.x) * progress) * TS;
       const wy = (from.y + (to.y - from.y) * progress) * TS;
       const followerMoving = this.moving && (from.x !== to.x || from.y !== to.y);
+      if (!followerMoving && claimedActorPositions.some(p => !p.moving && Math.abs(p.x - wx) < .001 && Math.abs(p.y - wy) < .001)) return;
+      claimedActorPositions.push({ x: wx, y: wy, moving: followerMoving });
       actors.push({
         kind: 'follower', member, x: wx, y: wy, dir: to.dir || this.dir,
         fromDir: from.dir || to.dir || this.dir, moving: followerMoving,

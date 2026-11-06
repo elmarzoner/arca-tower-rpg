@@ -320,3 +320,96 @@ test('sprite baseline scan is clamped and cached per sheet layout', () => {
   assert.equal(cached, first);
   assert.equal(reads, 1);
 });
+
+test('reversing the party keeps separated followers visible, including crossing paths', () => {
+  const h = movementHarness();
+  const { Game, Input, sandbox } = h;
+  const drawn = [];
+  const g = { fillRect() {}, drawImage() {}, createRadialGradient() { return { addColorStop() {} }; } };
+  sandbox.Art.getTileSheet = () => ({});
+  sandbox.Art.TIER_THEMES = [{ bg: '#000', accent: '#fff' }, { bg: '#000', accent: '#fff' }];
+  for (const method of ['drawMapDetails', 'drawPitfalls', 'drawSpecialFloorDetails', 'drawCampfires',
+    'drawChapterGate', 'drawWorldAnchor', 'drawRegionAtmosphere', 'drawSkySeaAtmosphere', 'drawSpecialFloorAtmosphere']) {
+    Game[method] = () => {};
+  }
+  Game.drawFieldHero = () => {};
+  Game.drawFieldPartyMember = (_g, actor) => drawn.push(actor);
+
+  function prepareMap() {
+    Game.map.tier = 1;
+    Game.map.tiles = Array.from({ length: Game.map.h }, () => Array(Game.map.w).fill(0));
+    Game.floorLabelT = 0;
+  }
+  function drawFollowers() { drawn.length = 0; Game.drawField(g); return drawn.length; }
+
+  h.reset(); prepareMap();
+  Game.partyPath = [10, 9, 8, 7].map(x => ({ x, y: 10, dir: 'r' }));
+  Game.partyPathFrom = Game.partyPath.map(point => ({ ...point }));
+  Input.virtualDown('left');
+  h.frame(1 / 60);
+  assert.equal(drawFollowers(), 3, 'logical destination overlap must not hide a separated follower');
+  assert.ok(drawn.some(actor => actor.member.id === 'b' && actor.x < 8.1 * 32));
+  Game.advanceFieldMotion(.5 - Game.moveT);
+  assert.equal(drawFollowers(), 3, 'moving actors remain rendered while their paths cross');
+  Game.advanceFieldMotion(.95 - Game.moveT);
+  assert.equal(drawFollowers(), 3, 'all moving followers remain visible at the end of a reversal');
+
+  h.reset(); prepareMap();
+  assert.equal(drawFollowers(), 0, 'collapsed stationary spawn still avoids four superimposed sprites');
+  Input.virtualDown('right'); h.frame(1 / 60);
+  assert.equal(drawFollowers(), 1, 'only one stationary follower is drawn as the party unfolds');
+});
+
+test('queued menus and local dialogue do not snap the tracking camera', () => {
+  for (const trigger of ['cancel', 'ok', 'step-dialog']) {
+    const h = movementHarness();
+    const { Game, Input } = h;
+    h.reset(); Input.virtualDown('right');
+    for (let n = 0; n < 20; n++) h.frame(1 / 60);
+    if (trigger === 'step-dialog') Game.onStep = function () { this.state = 'dialog'; };
+    else {
+      if (trigger === 'ok') Game.interact = function () { this.state = 'dialog'; };
+      Input.pulse(trigger);
+    }
+    let previousCamera = Game.cameraFocusX;
+    for (let guard = 0; Game.state === 'field' && guard < 30; guard++) {
+      previousCamera = Game.cameraFocusX;
+      h.frame(1 / 60);
+    }
+    assert.equal(Game.state, trigger === 'cancel' ? 'menu' : 'dialog');
+    assert.ok(Math.abs(Game.cameraFocusX - previousCamera) < 4, `${trigger} must preserve smooth camera tracking`);
+    assert.ok(Game.px * 32 + 16 - Game.cameraFocusX > 1, 'local transition does not force camera onto the player');
+  }
+});
+
+test('NPCs reserve real party members departure tiles only while they are moving', () => {
+  const { Game } = createRuntime();
+  const fullParty = [{ kind: 'human', id: 'hero' }, { id: 'a' }, { id: 'b' }, { id: 'c' }];
+  function reset(followerX, party = fullParty) {
+    const npc = {
+      x: followerX, y: 11, homeX: followerX, homeY: 11, dir: 'u',
+      wander: true, wanderRadius: 2, npcWait: 0, npcMoving: false,
+    };
+    Object.assign(Game, {
+      floor: 2, px: 10, py: 10, dir: 'r', moving: true, moveT: .2, party,
+      partyPath: [10, 9, 8, 7].map(x => ({ x, y: 10 })),
+      partyPathFrom: [9, 8, 7, 6].map(x => ({ x, y: 10 })),
+      map: { w: 40, h: 40, town: true, npcs: [npc],
+        blocked: new Set([`${followerX - 1},11`, `${followerX + 1},11`, `${followerX},12`]) },
+    });
+    return npc;
+  }
+  const tailNpc = reset(6);
+  Game.updateTownNpcs(.01);
+  assert.equal(tailNpc.npcMoving, false, 'tail departure tile remains reserved during movement');
+  assert.deepEqual([tailNpc.x, tailNpc.y], [6, 11]);
+  Game.moving = false; tailNpc.npcWait = 0;
+  Game.updateTownNpcs(.01);
+  assert.equal(tailNpc.npcMoving, true, 'tail departure tile is released on arrival');
+  assert.deepEqual([tailNpc.x, tailNpc.y], [6, 10]);
+
+  const soloNpc = reset(7, [fullParty[0]]);
+  Game.updateTownNpcs(.01);
+  assert.equal(soloNpc.npcMoving, true, 'a solo hero does not reserve nonexistent follower paths');
+  assert.deepEqual([soloNpc.x, soloNpc.y], [7, 10]);
+});
