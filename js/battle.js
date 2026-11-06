@@ -5,6 +5,9 @@
 
 const Battle = {
   active: false,
+  // スマホでも行を押し分けやすくする。入力・描画・タップで同じ表示範囲を使う。
+  listPageSize: 4,
+  listRowHeight: 32,
 
   // V5アトラスは生成時の人物配置が等分セル境界を越えている。
   // 等分幅で切ると隣の敵が混ざるため、透明境界を実測した個別の source rect を使う。
@@ -233,7 +236,7 @@ const Battle = {
     return true;
   },
 
-  keepMenuSelectionVisible(menu, maxRows = 6) {
+  keepMenuSelectionVisible(menu, maxRows = this.listPageSize) {
     if (!menu || !menu.list || !menu.list.length) return 0;
     const maxStart = Math.max(0, menu.list.length - maxRows);
     let start = Math.max(0, Math.min(maxStart, menu.scroll || 0));
@@ -251,7 +254,7 @@ const Battle = {
     setTimeout(() => Input.virtualUp('ok'), 0);
   },
 
-  tapSelection(owner, index, maxRows = 6) {
+  tapSelection(owner, index, maxRows = this.listPageSize) {
     if (!owner) return;
     // 初回は選択だけ。同じ項目をもう一度タップした時だけ決定する。
     if (owner.tapSel === index) { owner.tapSel = null; this.queueTapConfirm(); return; }
@@ -377,6 +380,7 @@ const Battle = {
         AudioSys.sfx('ok');
         const c = this.choice; this.choice = null;
         (c.sel === 0 ? c.yes : c.no)();
+        return;
       }
       if (Input.pressed('cancel')) {
         AudioSys.sfx('cancel');
@@ -395,7 +399,7 @@ const Battle = {
       if (menu.sel >= alive.length) menu.sel = alive.length - 1;
       if (Input.pressed('left') || Input.pressed('up')) { menu.sel = (menu.sel + alive.length - 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('right') || Input.pressed('down')) { menu.sel = (menu.sel + 1) % alive.length; menu.tapSel = null; AudioSys.sfx('cursor'); }
-      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(alive[menu.sel]); }
+      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(alive[menu.sel]); return; }
       if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
@@ -405,7 +409,7 @@ const Battle = {
       if (!n) return;
       if (Input.pressed('up') || Input.pressed('left')) { menu.sel = (menu.sel + n - 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
       if (Input.pressed('down') || Input.pressed('right')) { menu.sel = (menu.sel + 1) % n; menu.tapSel = null; AudioSys.sfx('cursor'); }
-      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); }
+      if (Input.pressed('ok')) { AudioSys.sfx('ok'); menu.onPick(targets[menu.sel]); return; }
       if (Input.pressed('cancel')) { AudioSys.sfx('cancel'); this.menu = menu.back; }
       return;
     }
@@ -415,7 +419,7 @@ const Battle = {
     const next = Input.pressed('down') || (menu.kind === 'cmd' && Input.pressed('right'));
     if (prev) { menu.sel = (menu.sel + listLen - 1) % listLen; menu.tapSel = null; AudioSys.sfx('cursor'); }
     if (next) { menu.sel = (menu.sel + 1) % listLen; menu.tapSel = null; AudioSys.sfx('cursor'); }
-    if (menu.kind === 'spell' || menu.kind === 'item') this.keepMenuSelectionVisible(menu, 6);
+    if (menu.kind === 'spell' || menu.kind === 'item') this.keepMenuSelectionVisible(menu);
 
     if (Input.pressed('cancel')) {
       if (menu.kind !== 'cmd') { AudioSys.sfx('cancel'); this.menu = { kind: 'cmd', sel: 0 }; }
@@ -1116,11 +1120,11 @@ const Battle = {
       g.globalAlpha = fade;
       this.drawEnemyGraphic(g, e, spec, x, y, drawW, drawH);
       // 同じ透過スプライトを明るく再描画し、四角い白幕を出さない。
-      if (e.flash > 0 && Math.floor(e.flash * 28) % 2 === 0) {
+      if (e.flash > 0 && (reducedMotion || Math.floor(e.flash * 28) % 2 === 0)) {
         g.save();
-        g.globalAlpha = fade * Math.min(.72, e.flash * 4.2);
+        g.globalAlpha = fade * Math.min(reducedMotion ? .18 : .72, e.flash * (reducedMotion ? 1 : 4.2));
         g.globalCompositeOperation = 'screen';
-        if ('filter' in g) g.filter = 'brightness(2.7) saturate(.2)';
+        if ('filter' in g) g.filter = reducedMotion ? 'brightness(1.4)' : 'brightness(2.7) saturate(.2)';
         this.drawEnemyGraphic(g, e, spec, x, y, drawW, drawH);
         g.restore();
       }
@@ -1177,25 +1181,25 @@ const Battle = {
         UI.text(g, descs[m.sel], 26, 420, '#d8e4e6', 13);
       } else if (m.kind === 'spell' || m.kind === 'item') {
         const isSpell = m.kind === 'spell';
-        const start = this.keepMenuSelectionVisible(m, 6);
-        const end = Math.min(m.list.length, start + 6);
+        const start = this.keepMenuSelectionVisible(m);
+        const end = Math.min(m.list.length, start + this.listPageSize);
         UI.window(g, 8, 294, 300, 146);
         UI.window(g, 312, 294, 192, 92);
         UI.window(g, 312, 390, 192, 50);
         for (let i = start; i < end; i++) {
-          const row = i - start, rowY = 306 + row * 20, selected = i === m.sel;
+          const row = i - start, rowY = 306 + row * this.listRowHeight, selected = i === m.sel;
           const entry = isSpell ? SPELLS[m.list[i]] : ITEMS[m.list[i].id];
           if (selected) {
-            if (UI.selection) UI.selection(g, 17, rowY, 282, 19, `battle-${m.kind}`);
-            else { g.fillStyle = 'rgba(71,211,229,.15)'; g.fillRect(17, rowY, 282, 19); }
+            if (UI.selection) UI.selection(g, 17, rowY + 1, 282, this.listRowHeight - 2, `battle-${m.kind}`);
+            else { g.fillStyle = 'rgba(71,211,229,.15)'; g.fillRect(17, rowY + 1, 282, this.listRowHeight - 2); }
           }
-          UI.text(g, entry.name, 39, rowY + 16, selected ? '#fff' : '#bdc9cd', 14);
-          UI.text(g, isSpell ? `MP ${entry.mp}` : `×${m.list[i].n}`, 238, rowY + 16, isSpell ? '#7edcf3' : '#f1d482', 12);
-          if (selected) UI.cursor(g, 22, rowY + 4, 'right');
-          this.addHitArea(15, rowY - 1, 286, 21, () => { if (this.menu === m) this.tapSelection(m, i, 6); });
+          UI.text(g, entry.name, 39, rowY + 22, selected ? '#fff' : '#bdc9cd', 15);
+          UI.text(g, isSpell ? `MP ${entry.mp}` : `×${m.list[i].n}`, 238, rowY + 22, isSpell ? '#7edcf3' : '#f1d482', 12);
+          if (selected) UI.cursor(g, 22, rowY + 11, 'right');
+          this.addHitArea(15, rowY, 286, this.listRowHeight, () => { if (this.menu === m) this.tapSelection(m, i); });
         }
-        if (start > 0) UI.text(g, '▲', 286, 309, '#6fe1ef', 10);
-        if (end < m.list.length) UI.text(g, '▼', 286, 433, '#6fe1ef', 10);
+        if (start > 0) UI.text(g, '▲', 290, 305, '#6fe1ef', 9);
+        if (end < m.list.length) UI.text(g, '▼', 290, 438, '#6fe1ef', 9);
         const selectedEntry = isSpell ? SPELLS[m.list[m.sel]] : ITEMS[m.list[m.sel].id];
         UI.text(g, isSpell ? 'じゅもん' : 'どうぐ', 328, 319, '#ffe2a0', 13);
         UI.textWrap(g, selectedEntry.desc, 328, 342, 160, '#d7e2e5', 12, 16, 3);
@@ -1326,6 +1330,8 @@ const Battle = {
 
   drawEffects(g, sx, sy) {
     if (!this.fx || !this.fx.length) return;
+    const reducedMotion = !!Game.reducedMotion;
+    const motionScale = reducedMotion ? .15 : 1;
     const enemyPoint = target => {
       return { x: (Number.isFinite(target.visualX) ? target.visualX : 256) + sx, y: 190 + sy };
     };
@@ -1344,24 +1350,25 @@ const Battle = {
       if (fx.kind === 'popup') {
         const popIn = Math.min(1, p / .12);
         const fadeOut = Math.min(1, (1 - p) / .26);
-        const rise = 13 + p * 30;
-        const bounce = Math.sin(Math.min(1, p * 3.2) * Math.PI) * 7;
+        const rise = 13 + p * 30 * motionScale;
+        const bounce = Math.sin(Math.min(1, p * 3.2) * Math.PI) * 7 * motionScale;
         const tone = fx.tone || 'damage';
         const color = tone === 'heal' ? '#82ffac' : tone === 'mp' ? '#79dcff' :
           tone === 'critical' ? '#ffe66f' : tone === 'magic' ? '#d9b7ff' :
           tone === 'hurt' ? '#ff9a78' : '#fff7e2';
         const prefix = tone === 'heal' || tone === 'mp' ? '+' : '-';
         const fontSize = tone === 'critical' ? 24 : 20;
-        const yy = center.y - rise - bounce;
+        // 味方への数値は画面上端に近い。クリティカル見出しまで枠内に残す。
+        const yy = Math.max(fx.label ? 31 : 14, center.y - rise - bounce);
         g.globalAlpha = popIn * fadeOut;
         g.textAlign = 'center'; g.textBaseline = 'middle';
         g.font = `bold ${fontSize}px ${UI.FONT}`;
         g.lineJoin = 'round'; g.strokeStyle = 'rgba(2,5,12,.95)'; g.lineWidth = 5;
         g.strokeText(`${prefix}${fx.value}`, center.x, yy);
-        g.fillStyle = color; g.shadowColor = color; g.shadowBlur = tone === 'critical' ? 8 : 4;
+        g.fillStyle = color; g.shadowColor = color; g.shadowBlur = reducedMotion ? 0 : tone === 'critical' ? 8 : 4;
         g.fillText(`${prefix}${fx.value}`, center.x, yy);
         if (fx.label) {
-          g.shadowBlur = 3; g.font = `bold 12px ${UI.FONT}`;
+          g.shadowBlur = reducedMotion ? 0 : 3; g.font = `bold 12px ${UI.FONT}`;
           g.strokeStyle = 'rgba(2,5,12,.95)'; g.lineWidth = 4;
           g.strokeText(fx.label, center.x, yy - 21);
           g.fillStyle = '#fff3a8'; g.fillText(fx.label, center.x, yy - 21);
@@ -1370,25 +1377,27 @@ const Battle = {
         g.globalAlpha = alpha;
         g.translate(center.x, center.y); g.rotate(-.62);
         g.strokeStyle = fx.kind === 'critical' ? '#ffe87a' : '#dffaff';
-        g.shadowColor = fx.kind === 'critical' ? '#ff9f43' : '#6ee8ff'; g.shadowBlur = 12;
+        g.shadowColor = fx.kind === 'critical' ? '#ff9f43' : '#6ee8ff'; g.shadowBlur = reducedMotion ? 0 : 12;
         g.lineWidth = fx.kind === 'critical' ? 8 : 5;
-        g.beginPath(); g.moveTo(-45 + p * 16, 22); g.quadraticCurveTo(0, -18, 45 - p * 10, -24); g.stroke();
+        g.beginPath(); g.moveTo(-45 + p * 16 * motionScale, 22); g.quadraticCurveTo(0, -18, 45 - p * 10 * motionScale, -24); g.stroke();
       } else if (fx.kind === 'impact') {
         g.globalAlpha = alpha;
-        g.strokeStyle = '#fff3c4'; g.lineWidth = 3; g.shadowColor = '#ff8d55'; g.shadowBlur = 10;
-        for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; g.beginPath(); g.moveTo(center.x + Math.cos(a) * 5, center.y + Math.sin(a) * 5); g.lineTo(center.x + Math.cos(a) * (18 + p * 20), center.y + Math.sin(a) * (18 + p * 20)); g.stroke(); }
+        g.strokeStyle = '#fff3c4'; g.lineWidth = 3; g.shadowColor = '#ff8d55'; g.shadowBlur = reducedMotion ? 0 : 10;
+        const rays = reducedMotion ? 4 : 8;
+        for (let i = 0; i < rays; i++) { const a = i * Math.PI * 2 / rays; g.beginPath(); g.moveTo(center.x + Math.cos(a) * 5, center.y + Math.sin(a) * 5); g.lineTo(center.x + Math.cos(a) * (18 + p * 20 * motionScale), center.y + Math.sin(a) * (18 + p * 20 * motionScale)); g.stroke(); }
       } else {
         g.globalAlpha = alpha;
         const colors = fx.kind === 'fire' ? ['#ff5b32','#ffd45b'] : fx.kind === 'ice' ? ['#7deaff','#e9ffff'] :
           fx.kind === 'lightning' ? ['#8ed8ff','#fff39a'] : fx.kind === 'heal' ? ['#72f0a8','#e8ffbf'] : ['#a78bff','#e7d8ff'];
-        g.shadowColor = colors[0]; g.shadowBlur = 13;
-        for (let i = 0; i < 12; i++) {
-          const a = i * 2.399 + fx.seed, radius = 12 + p * 48 + (i % 3) * 5;
-          const x = center.x + Math.cos(a) * radius, y = center.y + Math.sin(a) * radius * .62 - p * 24;
+        g.shadowColor = colors[0]; g.shadowBlur = reducedMotion ? 0 : 13;
+        const particles = reducedMotion ? 4 : 12;
+        for (let i = 0; i < particles; i++) {
+          const a = i * 2.399 + fx.seed, radius = 12 + (p * 48 + (i % 3) * 5) * motionScale;
+          const x = center.x + Math.cos(a) * radius, y = center.y + Math.sin(a) * radius * .62 - p * 24 * motionScale;
           g.fillStyle = colors[i % 2]; g.beginPath(); g.arc(x, y, 2.5 + (i % 3), 0, Math.PI * 2); g.fill();
         }
         g.strokeStyle = colors[1]; g.lineWidth = 2;
-        g.beginPath(); g.ellipse(center.x, center.y + 26, 34 + p * 24, 10 + p * 5, 0, 0, Math.PI * 2); g.stroke();
+        g.beginPath(); g.ellipse(center.x, center.y + 26, 34 + p * 24 * motionScale, 10 + p * 5 * motionScale, 0, 0, Math.PI * 2); g.stroke();
       }
       g.restore();
     }

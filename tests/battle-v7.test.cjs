@@ -92,9 +92,9 @@ assert.equal(left.displayHp, left.hp, 'reduced motion also snaps informational H
 context.Game.reducedMotion = false;
 
 const longMenu = { kind: 'spell', sel: 12, scroll: 0, list: Array.from({ length: 13 }, (_, i) => i) };
-assert.equal(Battle.keepMenuSelectionVisible(longMenu, 6), 7, 'long list scrolls to its last page');
+assert.equal(Battle.keepMenuSelectionVisible(longMenu), 9, 'long list scrolls to its four-row last page');
 longMenu.sel = 0;
-assert.equal(Battle.keepMenuSelectionVisible(longMenu, 6), 0, 'wrapped selection scrolls back to the first page');
+assert.equal(Battle.keepMenuSelectionVisible(longMenu), 0, 'wrapped selection scrolls back to the first page');
 
 const tapMenu = { sel: 0, list: [1, 2, 3] };
 Battle.tapSelection(tapMenu, 0);
@@ -138,8 +138,27 @@ for (let i = 0; i < 13; i++) context.SPELLS[`s${i}`] = { name: `S${i}`, mp: i, d
 Battle.menu = { kind: 'spell', sel: 12, scroll: 0, list: Object.keys(context.SPELLS) };
 hitAreas.length = 0;
 Battle.draw(canvas);
-assert.equal(Battle.menu.scroll, 7, 'drawing a long spell list keeps the selected row visible');
-assert.equal(hitAreas.filter(area => area.x === 15).length, 6, 'only six visible spell rows receive tap regions');
+assert.equal(Battle.menu.scroll, 9, 'drawing a long spell list keeps the selected row visible');
+const spellRows = hitAreas.filter(area => area.x === 15);
+assert.equal(spellRows.length, 4, 'only four readable spell rows receive tap regions');
+assert.ok(spellRows.every(area => area.h === 32 && area.y >= 306 && area.y + area.h <= 434), 'all spell rows offer 32px touch height inside the panel');
+assert.ok(spellRows.every((area, i) => i === 0 || spellRows[i - 1].y + spellRows[i - 1].h <= area.y), 'adjacent spell touch regions do not overlap');
+context.Input.pressed = key => key === 'down';
+Battle.handleInput();
+assert.equal(Battle.menu.sel, 0, 'keyboard wrap returns to first entry');
+assert.equal(Battle.menu.scroll, 0, 'keyboard uses the same four-row capacity as rendering');
+context.Input.pressed = () => false;
+
+context.ITEMS.herb = { name: 'Herb', kind: 'heal', desc: 'Healing herb' };
+Battle.menu = { kind: 'item', sel: 7, scroll: 0, list: Array.from({length:8}, () => ({id:'herb',n:1})) };
+hitAreas.length = 0;
+Battle.draw(canvas);
+assert.equal(Battle.menu.scroll, 4, 'item list uses the same page size');
+const itemRows = hitAreas.filter(area => area.x === 15);
+assert.equal(itemRows.length, 4);
+itemRows[0].onTap();
+assert.equal(Battle.menu.sel, 4, 'touch chooses the visible absolute row index');
+assert.equal(Battle.menu.scroll, 4, 'touch keeps the same four-row viewport');
 
 Battle.start({ enemySpecs: ['slime', 'bat', 'rat'], boss: false, onEnd() {} });
 Battle.queue = [];
@@ -165,6 +184,44 @@ Battle.menu = null;
 hitAreas.length = 0;
 Battle.draw(canvas);
 assert.equal(hitAreas.length, 2, 'yes/no choice exposes exactly two tap regions');
+
+// Simultaneous pointer/keyboard pulses must resolve a prompt only once.
+let accepted = 0, declined = 0;
+Battle.choice = { sel: 0, yes() { accepted++; }, no() { declined++; } };
+context.Input.pressed = key => key === 'ok' || key === 'cancel';
+assert.doesNotThrow(() => Battle.handleInput(), 'confirm+back cannot dereference a cleared prompt');
+assert.equal(accepted, 1);
+assert.equal(declined, 0, 'one frame cannot both accept and decline');
+for (const kind of ['targetE', 'targetA']) {
+  const nextMenu = {kind:'cmd',sel:0};
+  const previousMenu = {kind:'cmd',sel:1};
+  Battle.menu = {kind,sel:0,list:context.Game.party,back:previousMenu,onPick(){Battle.menu=nextMenu;}};
+  Battle.handleInput();
+  assert.equal(Battle.menu,nextMenu,'confirm+back cannot restore the stale target selection');
+}
+context.Input.pressed = () => false;
+
+const effectCalls = [];
+const effectCanvas = new Proxy({
+  arc: (...args) => effectCalls.push(['arc', ...args]),
+  fillText: (...args) => effectCalls.push(['text', ...args]),
+}, { get(target,key){return key in target ? target[key] : () => {};}, set(target,key,value){target[key]=value;return true;} });
+Battle.fx = [{kind:'fire',target:{enemy:Battle.enemies[0]},t:.3,duration:.6,seed:0}];
+context.Game.reducedMotion=false;
+Battle.drawEffects(effectCanvas,0,0);
+assert.equal(effectCalls.filter(call=>call[0]==='arc').length,12,'normal magic retains full particles');
+effectCalls.length=0;
+context.Game.reducedMotion=true;
+Battle.drawEffects(effectCanvas,0,0);
+assert.equal(effectCalls.filter(call=>call[0]==='arc').length,4,'reduced motion uses fewer, quieter particles');
+for (const stamp of [.1,.4,.8]) {
+  effectCalls.length=0;
+  Battle.fx=[{kind:'popup',target:{party:context.Game.party[0]},t:stamp,duration:.86,seed:0,value:20,tone:'critical',label:'CRITICAL'}];
+  context.Game.reducedMotion=false;
+  Battle.drawEffects(effectCanvas,0,0);
+  assert.ok(effectCalls.filter(call=>call[0]==='text').every(call=>call[3]>=9),'damage value and critical label remain inside the screen');
+}
+context.Game.reducedMotion=false;
 
 assert.doesNotMatch(battleSource, /fillRect\(x, y, drawW, drawH\)/, 'sprite hit feedback no longer uses a rectangular white flash');
 console.log('PASS battle v7: formation, HP, motion preference, kill flow, scrolling, 1+1 tap, targets, four-party status');
