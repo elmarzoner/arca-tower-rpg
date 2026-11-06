@@ -13,6 +13,7 @@
   const navigation = () => ['menu', 'choice', 'shop', 'jobchange', 'title'].includes(Game.state)
     || (Game.state === 'battle' && (Battle.choice || (Battle.phase === 'command' && !Battle.queue.length)));
   let renderedMode = null, lastHud = '', nodes, pointer = null, lastTap = 0;
+  const resetPointer = () => { pointer = null; };
   const prefsKey = 'arca_presentation_v7';
   try { Game.reducedMotion = JSON.parse(localStorage.getItem(prefsKey) || 'null')?.reducedMotion
     ?? matchMedia('(prefers-reduced-motion: reduce)').matches; }
@@ -56,6 +57,7 @@
     const portrait = touch && h > w;
     doc.classList.toggle('touch-ui', touch);
     doc.classList.toggle('portrait-game', portrait);
+    doc.classList.toggle('landscape-game', touch && !portrait);
     const availableW = Math.max(200, w - (portrait ? 16 : touch ? 144 : 40));
     const availableH = Math.max(160, h - (portrait ? 248 : touch ? 22 : 104));
     const scale = Math.min(availableW / 512, availableH / 448);
@@ -113,7 +115,10 @@
       const bounds = canvas.getBoundingClientRect();
       dispatchTap((e.clientX-bounds.left)*512/bounds.width,(e.clientY-bounds.top)*448/bounds.height);
     });
-    canvas.addEventListener('pointercancel', () => { pointer = null; });
+    canvas.addEventListener('pointercancel', resetPointer);
+    canvas.addEventListener('lostpointercapture', e => {
+      if (pointer?.id === e.pointerId) resetPointer();
+    });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
     let lastWheel = 0;
     canvas.addEventListener('wheel', e => {
@@ -123,12 +128,15 @@
         pulse(e.deltaY>0?'down':'up'); lastWheel=performance.now();
       }
     }, {passive:false});
-    window.addEventListener('blur', () => { pointer=null; Input.clear(); });
+    window.addEventListener('blur', () => { resetPointer(); Input.clear(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { resetPointer(); Input.clear(); }
+    });
     window.addEventListener('resize', resizeStage);
     window.addEventListener('orientationchange', () => setTimeout(resizeStage,100));
     window.visualViewport?.addEventListener('resize',resizeStage);
     document.getElementById('help-button').addEventListener('click', () => {
-      Input.clear(); nodes.panel.showModal();
+      resetPointer(); Input.clear(); nodes.panel.showModal();
     });
     document.getElementById('help-close').addEventListener('click',()=>nodes.panel.close());
     nodes.panel.addEventListener('close',()=>{ Input.clear(); Game.last=performance.now(); });

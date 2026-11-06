@@ -5,8 +5,9 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 
 function target() {
+  const classes = new Set();
   return { events: {}, style: {}, dataset: {}, open: false,
-    classList: { toggle() {}, add() {}, remove() {} },
+    classList: { toggle(key,on) { if(on) classes.add(key); else classes.delete(key); }, add(key) { classes.add(key); }, remove(key) { classes.delete(key); }, contains: key=>classes.has(key) },
     addEventListener(type, fn) { (this.events[type] ||= []).push(fn); },
     emit(type, values = {}) { for (const fn of this.events[type] || []) fn({preventDefault() {}, ...values}); },
     setAttribute() {}, setPointerCapture() {},
@@ -23,9 +24,10 @@ const doc = Object.assign(target(), {hidden:false,
   querySelector: selector => elements[selector.includes('cancel') ? 'cancel':'ok'],
   querySelectorAll: () => [],
 });
+let coarsePointer = false;
 const sandbox = { console, window:win, document:doc, performance:{now:()=>clock.now},
   AudioSys:{ensureCtx() {}}, localStorage:{getItem:()=>null,setItem() {}},
-  matchMedia:()=>({matches:false}), setTimeout:fn=>fn(),
+  matchMedia:query=>({matches:coarsePointer && query.includes('pointer: coarse')}), setTimeout:fn=>fn(),
 };
 const context = vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(root,'js/game.js'),'utf8'),context);
@@ -97,10 +99,28 @@ elements.screen.emit('pointerdown',{pointerId:2,button:0,clientX:90,clientY:100}
 elements.screen.emit('pointerup',{pointerId:2,button:0,clientX:90,clientY:170});
 assert.equal(Input.pressed('down'),true,'vertical swipe moves menu selection');
 assert.equal(selected,2,'swipe is not also a tap');
+// An interrupted pointer must not block the next tap, nor activate after returning.
+elements.screen.emit('pointerdown',{pointerId:3,button:0,clientX:90,clientY:100});
+elements.screen.emit('lostpointercapture',{pointerId:3});
+tap(); assert.equal(selected,3,'lost capture releases the active gesture');
+elements.screen.emit('pointerdown',{pointerId:4,button:0,clientX:90,clientY:100});
+doc.hidden=true; doc.emit('visibilitychange'); doc.hidden=false;
+clock.now+=200;
+elements.screen.emit('pointerup',{pointerId:4,button:0,clientX:90,clientY:100});
+assert.equal(selected,3,'returning from a hidden tab does not finish an old tap');
+tap(); assert.equal(selected,4,'fresh tap after visibility change works');
 win.innerWidth=390; win.innerHeight=844; win.emit('resize');
 assert.equal(elements.screen.style.width,'374px','portrait fits within device width');
 assert.ok(parseFloat(elements.screen.style.height)+248<=844,'portrait reserves controls');
 win.innerWidth=844; win.innerHeight=390; win.emit('resize');
 assert.ok(parseFloat(elements.screen.style.width)+144<=844,'landscape reserves side controls');
 assert.ok(parseFloat(elements.screen.style.height)+22<=390,'landscape fits viewport');
+assert.equal(doc.documentElement.classList.contains('landscape-game'),true);
+coarsePointer=true; win.innerWidth=1024; win.innerHeight=768; win.emit('resize');
+assert.equal(doc.documentElement.classList.contains('landscape-game'),true,'tall touch tablets use the same side-control layout as short landscape phones');
+assert.equal(doc.documentElement.classList.contains('portrait-game'),false);
+const css=fs.readFileSync(path.join(root,'css/presentation-v7.css'),'utf8');
+assert.match(css,/\.landscape-game #wrap\{padding:11px 72px\}/,'CSS padding matches the touch landscape sizing calculation at every height');
+coarsePointer=false; win.emit('resize');
+assert.equal(doc.documentElement.classList.contains('landscape-game'),false,'desktop restores normal chrome');
 console.log('PASS presentation controls: keyboard repeat, fast tap, context isolation, native guide, pause, hit testing, swipe, responsive sizes');
