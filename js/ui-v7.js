@@ -28,6 +28,9 @@
   UI.colors = COLORS;
   UI.hitAreas = [];
   UI._focusTracks = new Map();
+  // Menu objects are short-lived. Keep viewport state separate from save data,
+  // and let it be collected when that menu is closed.
+  const listViewports = new WeakMap();
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const now = () => typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -366,6 +369,7 @@
     const {
       x = 12, y = 60, w = 304, h = 312, title = '', kicker = 'SELECT',
       items = [], selection = 0, rowHeight = 38, key = title,
+      scrollOwner = items,
       label = value => String(value), meta = () => '', secondary = null,
       itemColor = () => COLORS.ink, picked = () => false,
       onSelect = null, interactive = true, emptyText = 'なにも ありません', emptyTap = null,
@@ -376,7 +380,13 @@
     const capacity = Math.max(1, Math.floor((h - 51) / rowHeight));
     const len = items.length;
     const sel = len ? clamp(selection, 0, len - 1) : 0;
-    const start = len <= capacity ? 0 : clamp(sel - Math.floor(capacity / 2), 0, len - capacity);
+    const priorViewport = listViewports.get(scrollOwner);
+    let start = clamp(priorViewport && priorViewport.key === key ? priorViewport.start : 0, 0, Math.max(0, len - capacity));
+    // Only scroll when selection leaves the visible range. Recentring a clicked
+    // row made a second tap at the same coordinates choose a different item.
+    if (sel < start) start = sel;
+    else if (sel >= start + capacity) start = sel - capacity + 1;
+    listViewports.set(scrollOwner, { key, start });
     const end = Math.min(len, start + capacity);
     if (len) UI.text(g, `${sel + 1} / ${len}`, x + w - 20, y + 30, COLORS.faint, 9, 'right');
 
@@ -637,6 +647,7 @@
     drawTopBar(g, '呪文', `${p.name}  MP ${p.mp}/${p.maxmp}`, game);
     const list = drawListPanel(g, {
       title: `${p.name}の呪文`, kicker: 'FIELD MAGIC', items: ids, selection: sel, key: 'menu-spells',
+      scrollOwner: menu,
       label: id => SPELLS[id].name,
       meta: id => `MP ${SPELLS[id].mp}`,
       itemColor: id => p.mp < SPELLS[id].mp ? COLORS.red : COLORS.muted,
@@ -668,6 +679,7 @@
     drawTopBar(g, '道具袋', `${game.bag.length} 種類`, game);
     const list = drawListPanel(g, {
       title: '持ち物', kicker: 'INVENTORY', items: game.bag, selection: sel, key: 'menu-items',
+      scrollOwner: menu,
       label: entry => ITEMS[entry.id].name,
       meta: entry => `× ${entry.n}`,
       secondary: entry => ITEM_KIND_LABELS[ITEMS[entry.id].kind] || '大切な道具',
@@ -728,6 +740,7 @@
     drawTopBar(g, weapon ? '武器を選ぶ' : '鎧を選ぶ', member.name, game);
     const list = drawListPanel(g, {
       title: weapon ? '武器袋' : '防具袋', kicker: 'EQUIPMENT', items: rows, selection: sel, key: `equip-pick:${menu.slot}`,
+      scrollOwner: menu,
       label: entry => entry ? equipDefinition(menu.slot, entry.id).name : 'はずす',
       meta: entry => entry ? `${weapon ? '攻' : '守'} +${weapon ? equipDefinition(menu.slot, entry.id).atk : equipDefinition(menu.slot, entry.id).def}` : '—',
       secondary: entry => entry ? '装備候補' : '何も装備しない', rowHeight: 40,
@@ -760,6 +773,7 @@
     const list = drawListPanel(g, {
       x: 12, y: 60, w: 304, h: 312, title: '仲間一覧', kicker: 'ROSTER', items: members, selection: sel,
       key: 'menu-party', rowHeight: 40,
+      scrollOwner: menu,
       label: member => `${members.indexOf(member) < game.party.length ? '◆ ' : ''}${member.name}`,
       meta: member => `Lv ${member.level}`,
       secondary: (member, i) => `${i < game.party.length ? '旅の仲間' : '控え'} / ${memberRole(member)}`,
@@ -771,8 +785,8 @@
     const p = list.selected;
     if (p) {
       drawMemberMedallion(g, p, 340, 122, 54);
-      UI.text(g, p.name, 405, 139, p.hp <= 0 ? COLORS.red : COLORS.ink, 15);
-      UI.text(g, memberRole(p), 405, 158, COLORS.muted, 10);
+      UI.text(g, UI.fitText(g, p.name, 78, 15), 405, 139, p.hp <= 0 ? COLORS.red : COLORS.ink, 15);
+      UI.text(g, UI.fitText(g, memberRole(p), 78, 10), 405, 158, COLORS.muted, 10);
       UI.text(g, `Lv ${p.level}`, 480, 181, COLORS.cyanSoft, 11, 'right');
       UI.meter(g, 340, 211, 140, p.hp, p.maxhp, p.hp <= 0 ? COLORS.red : COLORS.green, 'HP');
       UI.meter(g, 340, 240, 140, p.mp, p.maxmp, COLORS.cyan, 'MP');
@@ -799,6 +813,7 @@
     drawTopBar(g, '移動先', 'トベール', game);
     const list = drawListPanel(g, {
       title: '訪れた場所', kicker: 'DESTINATION', items: names, selection: sel, key: 'menu-warp',
+      scrollOwner: menu,
       label: entry => entry.name, meta: entry => `${entry.floor}F`, secondary: () => '記録済みの休息地', rowHeight: 40,
       onSelect: i => selectByTap(() => menu.sel, value => { menu.sel = value; }, i)(),
       emptyText: '移動できる場所がありません',
@@ -1107,6 +1122,7 @@
     const list = drawListPanel(g, {
       title: buying ? '品ぞろえ' : '売れるもの', kicker: buying ? 'BUY' : 'SELL', items: entries, selection: sel,
       key: buying ? 'shop-buy' : 'shop-sell', rowHeight: 40, interactive,
+      scrollOwner: shop,
       label: entry => entry.name || shopEntryName(entry),
       meta: entry => `${entry.price} G`,
       secondary: entry => entry.kind === 'item' || entry.type === 'item'

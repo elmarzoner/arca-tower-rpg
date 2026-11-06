@@ -448,10 +448,24 @@ const Game = {
       this.party[0].weapon = 'stick'; this.party[0].armor = 'cloth';
     }
     if (!this.map) this.loadFloor(2, null);
-    if (test === 'battle-party') {
+    if (test === 'ui-inventory') {
+      this.party = ['hero', 'rino'].map(id => Chars.makeHuman(id, 8));
+      this.party[0].mp = Math.max(0, this.party[0].mp - 1);
+      this.bag = Object.keys(ITEMS).map(id => ({ id, n: 2 }));
+      this.loadFloor(1, null); this.openMenu();
+      this.menuStack.push({ kind: 'items', sel: 0 });
+      return true;
+    }
+    if (test === 'battle-party' || test === 'battle-spells') {
       this.party = ['hero', 'rino', 'gald', 'fio'].map(id => Chars.makeHuman(id, 8));
       this.loadFloor(12, null); this.state = 'battle';
       Battle.start({ enemySpecs: ['goblin', 'aquan', 'slimered'], boss: false, onEnd: () => {} });
+      if (test === 'battle-spells') {
+        const list = Object.keys(SPELLS).filter(id => SPELLS[id].kind !== 'field_warp');
+        this.party[0].spells = list;
+        Battle.queue.length = 0; Battle.phase = 'command'; Battle.memberIdx = 0;
+        Battle.menu = { kind: 'spell', sel: 0, scroll: 0, list, back: { kind: 'cmd', sel: 1 } };
+      }
       return true;
     }
     if (test === 'battle-tier1') {

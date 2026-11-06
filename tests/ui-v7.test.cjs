@@ -108,6 +108,20 @@ Game.drawMenu(g);
 assert.ok(UI.hitAreas.length >= 6 && UI.hitAreas.length <= 7, 'inventory only exposes viewport rows');
 assert.ok(g.calls.every(call => call.y <= 448), 'inventory text stays inside the logical canvas');
 
+// A visible row must not move away from the pointer after the first selection.
+// Otherwise two taps at the same place can select two different inventory entries.
+Game.menuStack = [{ kind: 'items', sel: 0 }];
+UI.hitAreas = [];
+Game.drawMenu(g);
+const lowerItemRow = UI.hitAreas[5];
+lowerItemRow.onTap();
+assert.equal(Game.curMenu().sel, 5);
+UI.hitAreas = [];
+Game.drawMenu(g);
+UI.hitAreas.find(area => area.y === lowerItemRow.y).onTap();
+assert.equal(Game.curMenu().sel, 5, 'selecting a visible row preserves its on-screen position');
+assert.equal(Input.pressed('ok'), true, 'second tap at the same location confirms that row');
+
 Game.equipBag = Array.from({ length: 28 }, (_, i) => ({
   slot: 'w', id: ['stick', 'club', 'copper', 'spear'][i % 4],
 }));
@@ -115,6 +129,14 @@ Game.menuStack = [{ kind: 'equipPick', member: Game.party[0], slot: 'w', sel: 28
 UI.hitAreas = [];
 Game.drawMenu(g);
 assert.ok(UI.hitAreas.length <= 7, 'equipment candidates are viewport bounded');
+const firstEquipmentRow = UI.hitAreas[0];
+firstEquipmentRow.onTap();
+assert.equal(Game.curMenu().sel, 23, 'last equipment page starts at the visible row, not a hidden entry');
+UI.hitAreas = [];
+Game.drawMenu(g);
+UI.hitAreas.find(area => area.y === firstEquipmentRow.y).onTap();
+assert.equal(Game.curMenu().sel, 23, 'rebuilt equipment arrays retain the viewport for their menu');
+assert.equal(Input.pressed('ok'), true, 'same-position equipment tap confirms the chosen item');
 
 Game.party = [human('hero'), human('rino'), human('gald'), human('fio')];
 Game.reserve = Array.from({ length: 16 }, (_, i) => Object.assign(human(i % 2 ? 'rino' : 'gald'), { name: `控え${i}` }));
@@ -122,6 +144,22 @@ Game.menuStack = [{ kind: 'party', sel: 19, picked: -1 }];
 UI.hitAreas = [];
 Game.drawMenu(g);
 assert.ok(UI.hitAreas.length <= 7, 'twenty-member roster is viewport bounded');
+const firstRosterRow = UI.hitAreas[0];
+firstRosterRow.onTap();
+assert.equal(Game.curMenu().sel, 14);
+UI.hitAreas = [];
+Game.drawMenu(g);
+UI.hitAreas.find(area => area.y === firstRosterRow.y).onTap();
+assert.equal(Game.curMenu().sel, 14, 'rebuilt party arrays retain their visible rows after selection');
+assert.equal(Input.pressed('ok'), true, 'same-position roster tap confirms the chosen member');
+
+Game.reserve[10].name = 'とてもながいなまえの仲間';
+Game.menuStack = [{ kind: 'party', sel: 14, picked: -1 }];
+g.calls.length = 0;
+UI.hitAreas = [];
+Game.drawMenu(g);
+const profileName = g.calls.find(call => call.x === 405 && call.y === 139);
+assert.ok(UI.measure(g, profileName.text, 15) <= 78, 'party profile name stays within its detail column');
 
 Game.party = [human('hero')];
 Game.reserve = [];
@@ -130,6 +168,20 @@ Game.equipBag = [];
 Game.floor = 1;
 Game.map = { name: '村', tier: 1, safe: true };
 Game.gold = 100;
+Game.openShop('items');
+Game.shop.stock = Array.from({ length: 12 }, () => ({ ...Game.shop.stock[0] }));
+Game.shop.mode = 'buy';
+Game.shop.sel = 11;
+UI.hitAreas = [];
+Game.drawShop(g);
+const firstShopRow = UI.hitAreas[0];
+firstShopRow.onTap();
+assert.equal(Game.shop.sel, 6);
+UI.hitAreas = [];
+Game.drawShop(g);
+UI.hitAreas.find(area => area.y === firstShopRow.y).onTap();
+assert.equal(Game.shop.sel, 6, 'shop viewport remains stable on a first tap');
+assert.equal(Input.pressed('ok'), true, 'same-position shop tap confirms the selected row');
 Game.openShop('items');
 Game.shop.mode = 'buy';
 Game.shop.sel = 0;
@@ -186,4 +238,4 @@ UI.hitAreas = [];
 Game.drawTitle(g);
 assert.equal(UI.hitAreas.length, 1, 'new game only title exposes one option');
 
-console.log('PASS ui-v7: bounded lists, taps, purchase gate, dialogue pagination/callbacks, choice and title');
+console.log('PASS ui-v7: bounded stable lists, same-position taps, profile bounds, purchase gate, dialogue pagination/callbacks, choice and title');
